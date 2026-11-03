@@ -132,6 +132,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    board::wait_for_console().await;
 
     info!("=== Demo 02: battery (BQ27220 fuel gauge) ===");
     info!("front tap = full dump, back tap = state history");

@@ -41,6 +41,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    board::wait_for_console().await;
 
     let mut led = GreenLed::new(peripherals.GPIO43);
     led.set(true);
@@ -48,7 +49,7 @@ async fn main(_spawner: Spawner) -> ! {
     info!("=== ESP-VoCat bring-up ===");
     print_chip_info();
 
-    let psram = Psram::new(peripherals.PSRAM, Default::default());
+    let psram = board::psram(peripherals.PSRAM);
     test_psram(&psram);
     esp_alloc::psram_allocator!(&psram);
     check_heap();

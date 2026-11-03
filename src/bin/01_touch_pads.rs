@@ -39,6 +39,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    board::wait_for_console().await;
 
     info!("=== Demo 01: touch pads (TOUCH6/GPIO6, TOUCH7/GPIO7) ===");
     info!("Calibrating, don't touch the pads...");

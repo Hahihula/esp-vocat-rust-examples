@@ -27,7 +27,8 @@ use esp_hal::{
     clock::CpuClock,
     gpio::{Level, Output, OutputConfig, OutputPin},
     i2c::master::{Config as I2cConfig, ConfigError, I2c, Instance as I2cInstance},
-    peripherals::{GPIO1, GPIO2, GPIO9, GPIO47, GPIO48, Peripherals},
+    peripherals::{GPIO1, GPIO2, GPIO9, GPIO47, GPIO48, PSRAM, Peripherals},
+    psram::{Psram, PsramConfig, PsramMode, SpiRamFreq},
     time::Rate,
 };
 
@@ -62,6 +63,26 @@ pub fn init() -> Peripherals {
     peripherals
 }
 
+/// Initialises the 16 MB octal PSRAM at 80 MHz (the esp-hal default is 40 MHz).
+pub fn psram(psram: PSRAM<'static>) -> Psram {
+    let config = PsramConfig {
+        mode: PsramMode::OctalSpi,
+        ram_frequency: SpiRamFreq::Freq80m,
+        ..Default::default()
+    };
+    Psram::new(psram, config)
+}
+
+/// Initialises PSRAM with [`psram`] and adds all of it to the heap.
+/// Allocations that don't fit into internal RAM then come from PSRAM.
+/// Call at most once. Returns the PSRAM size in bytes.
+pub fn psram_heap(psram: PSRAM<'static>) -> usize {
+    let psram = self::psram(psram);
+    let (_, size) = psram.raw_parts();
+    esp_alloc::psram_allocator!(&psram);
+    size
+}
+
 /// Creates the async I2C master for the shared bus (codecs, IMU, fuel gauge, touch).
 ///
 /// The bus has 2.2 kΩ pull-ups on board.
@@ -75,6 +96,13 @@ pub fn i2c<'d>(
         .with_scl(scl)
         .with_sda(sda)
         .into_async())
+}
+
+/// Waits two seconds so a serial monitor started right after reset catches the
+/// first log lines. The USB-Serial-JTAG console re-enumerates on every chip
+/// reset, and anything printed before the host reconnects is lost.
+pub async fn wait_for_console() {
+    embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
 }
 
 /// Switches on `VCC_3V3`, which powers the LCD (with its touch controller) and
