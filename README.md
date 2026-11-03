@@ -53,9 +53,10 @@ board, so `esp-println` is built with the `jtag-serial` feature instead of `auto
 | Path | Contents |
 |------|----------|
 | `src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
-| `src/audio.rs` | I2S output stream to the ES8311 (DMA ring buffer) and a small synthesiser |
+| `src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers), and a small synthesiser |
 | `src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
 | `src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
+| `src/es7210.rs` | ES7210 microphone ADC driver, ported from Espressif's `esp_codec_dev` |
 | `src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
 | `src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |
 | `src/touchscreen.rs` | CST816T touch controller driver (position, controller gestures) |
@@ -541,4 +542,62 @@ INFO - === Demo 07: speaker (I2S, ES8311, NS4150B) ===
 INFO - front tap = next item, front long touch = stop, back tap = volume
 INFO - I2S running: 44100 Hz, 16-bit stereo
 INFO - ES8311 in playback mode, volume -12 dB
+```
+
+### 08 – Microphones
+
+```bash
+cargo run --release --bin 08_microphones
+```
+
+Records both microphones through the ES7210 (I2C 0x40) and shows them on the LCD. The
+ES7210 runs as I2S slave: the ESP32-S3 provides MCLK (256 × fs = 4.096 MHz), BCLK and WS,
+and receives 16 kHz, 16-bit stereo on DIN (GPIO3). Left is MIC1, right is MIC2.
+`src/es7210.rs` is a port of the init sequence of Espressif's `esp_codec_dev` driver.
+Only SDOUT1 of the ES7210 is wired, so in plain I2S mode only MIC1 and MIC2 are
+available. MIC3, the speaker loopback for echo cancellation, would need TDM mode.
+
+A task reads the stream and publishes RMS and peak level per channel every 50 ms (800
+samples, after a slow DC-removing high-pass). The first 300 samples of each block go to
+a shared buffer for the oscilloscope. The main task draws:
+
+- **Oscilloscope:** both channels (MIC1 yellow, MIC2 cyan), about 19 ms wide
+- **Level meters:** −60…0 dBFS RMS per microphone, with a 1.5 s red peak-hold marker
+- **Gain:** the current microphone gain
+
+It also logs both levels twice a second. A peak above −6 dBFS after at least 300 ms
+below −30 dBFS logs `CLAP` and flashes the green LED.
+
+Touch pads:
+
+- **back tap:** next microphone gain (0, 12, 24, 30, 37.5 dB; starts at 30 dB)
+- **front tap:** freeze or unfreeze the oscilloscope
+
+Measured in a quiet room, the noise floor follows the gain: about −88 dBFS at 0 dB,
+−77 dBFS at 12 dB, −60 dBFS at 30 dB and −53 dBFS at 37.5 dB. A clap at 30 dB reaches
+0 dBFS. A sound from one side can show up to 20 dB more on the nearer microphone.
+
+Two pitfalls of the receive stream, both fixed:
+
+- The ring starts filling as soon as `AudioIn::new` returns. If the reading task is
+  started later (here it first waited for the ES7210 init), the ring overflows and the
+  DMA stops with a descriptor error. The reader is spawned right after the stream is
+  created.
+- A DMA descriptor doesn't always end on a frame boundary. Consuming only whole 4-byte
+  frames left the last bytes of such a descriptor unconsumed forever, so the ring stopped
+  draining. `AudioIn::read` consumes everything and carries a split frame over to the
+  next piece.
+
+Example output:
+
+```
+INFO - === Demo 08: microphones (ES7210, 16 kHz) ===
+INFO - back tap = mic gain, front tap = freeze scope; clap to flash the LED
+INFO - ES7210 chip ID 72 10
+INFO - ES7210 running, gain 30 dB
+INFO - MIC1  -62.3 dBFS (peak  -52.1)  MIC2  -62.2 dBFS (peak  -51.6)
+INFO - CLAP (0.0 dBFS)
+INFO - MIC1  -28.5 dBFS (peak  -12.6)  MIC2  -29.6 dBFS (peak  -17.4)
+INFO - gain 0 dB
+INFO - MIC1  -88.0 dBFS (peak  -78.3)  MIC2  -88.2 dBFS (peak  -80.8)
 ```

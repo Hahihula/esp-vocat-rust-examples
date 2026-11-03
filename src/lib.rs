@@ -11,6 +11,7 @@ pub mod audio;
 pub mod battery;
 pub mod board;
 pub mod display;
+pub mod es7210;
 pub mod motion;
 mod st77916_init;
 pub mod touch;

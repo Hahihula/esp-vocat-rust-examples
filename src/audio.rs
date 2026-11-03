@@ -14,16 +14,22 @@
 //! dry and stops; [`AudioOut::fill`] is meant to be called in a loop from one
 //! task.
 //!
+//! [`AudioIn`] is the receive side: stereo frames from the ES7210
+//! microphone ADC on DIN (GPIO3).
+//!
 //! [`Synth`] is a small sine/square synthesiser with an envelope, enough for
 //! beeps and simple melodies.
 
 use embassy_time::Duration;
 use esp_hal::{
     Async,
-    dma::DmaTxStreamBuf,
-    dma_tx_stream_buffer,
-    i2s::master::{Channels, DataFormat, Error as I2sError, I2s, I2sTxDmaTransfer, TdmConfig},
-    peripherals::{DMA_CH1, GPIO39, GPIO40, GPIO41, GPIO42, I2S0},
+    dma::{DmaRxStreamBuf, DmaTxStreamBuf},
+    dma_rx_stream_buffer, dma_tx_stream_buffer,
+    i2s::master::{
+        Channels, DataFormat, Error as I2sError, I2s, I2sRxDmaTransfer, I2sTxDmaTransfer,
+        TdmConfig,
+    },
+    peripherals::{DMA_CH1, GPIO3, GPIO39, GPIO40, GPIO41, GPIO42, I2S0},
     time::Rate,
 };
 use libm::sinf;
@@ -106,6 +112,110 @@ impl AudioOut {
             });
         }
         Ok(())
+    }
+}
+
+/// The I2S pins for recording.
+pub struct I2sInPins {
+    pub mclk: GPIO42<'static>,
+    pub bclk: GPIO40<'static>,
+    pub ws: GPIO39<'static>,
+    /// SDOUT1 of the ES7210.
+    pub din: GPIO3<'static>,
+}
+
+/// Size of the DMA ring buffer for recording.
+const IN_RING_BYTES: usize = 8192;
+
+/// A running I2S input stream: 16-bit stereo frames from the ES7210 (left =
+/// MIC1, right = MIC2).
+pub struct AudioIn {
+    transfer: I2sRxDmaTransfer<'static, Async, DmaRxStreamBuf>,
+    /// Bytes of a frame that was split between two DMA descriptors.
+    partial: [u8; FRAME_BYTES],
+    partial_len: usize,
+}
+
+impl AudioIn {
+    /// Starts the I2S clocks (MCLK = 256 × fs) and the receive stream. The
+    /// ES7210 can be initialised once this is running.
+    pub fn new(
+        i2s: I2S0<'static>,
+        dma: DMA_CH1<'static>,
+        pins: I2sInPins,
+        sample_rate: u32,
+    ) -> Result<Self, Error> {
+        let config = TdmConfig::new_tdm_philips()
+            .with_sample_rate(Rate::from_hz(sample_rate))
+            .with_data_format(DataFormat::Data16Channel16)
+            .with_channels(Channels::STEREO);
+        let i2s = I2s::new(i2s, dma, config)
+            .map_err(Error::Config)?
+            .with_mclk(pins.mclk)
+            .into_async();
+        let rx = i2s
+            .i2s_rx
+            .with_bclk(pins.bclk)
+            .with_ws(pins.ws)
+            .with_din(pins.din)
+            .build();
+        let buf = dma_rx_stream_buffer!(IN_RING_BYTES, 1024);
+        let transfer = rx.read(buf).map_err(|(e, _, _)| Error::I2s(e))?;
+        Ok(Self {
+            transfer,
+            partial: [0; FRAME_BYTES],
+            partial_len: 0,
+        })
+    }
+
+    /// Waits for recorded data and passes each frame (left, right) to
+    /// `frame`. Has to be called often enough that the ring (about 128 ms at
+    /// 16 kHz) never fills up.
+    pub async fn read(&mut self, mut frame: impl FnMut(i16, i16)) -> Result<usize, Error> {
+        self.transfer
+            .wait_for_available_async()
+            .await
+            .map_err(Error::Dma)?;
+        let mut frames = 0;
+        let emit = |f: &[u8], frame: &mut dyn FnMut(i16, i16)| {
+            frame(
+                i16::from_le_bytes([f[0], f[1]]),
+                i16::from_le_bytes([f[2], f[3]]),
+            );
+        };
+        loop {
+            let data = self.transfer.peek();
+            if data.is_empty() {
+                break;
+            }
+            let len = data.len();
+            let mut rest = data;
+            // A descriptor doesn't always end on a frame boundary: complete
+            // the frame carried over from the previous piece first.
+            if self.partial_len > 0 {
+                let take = (FRAME_BYTES - self.partial_len).min(rest.len());
+                self.partial[self.partial_len..self.partial_len + take]
+                    .copy_from_slice(&rest[..take]);
+                self.partial_len += take;
+                rest = &rest[take..];
+                if self.partial_len == FRAME_BYTES {
+                    emit(&self.partial, &mut frame);
+                    frames += 1;
+                    self.partial_len = 0;
+                }
+            }
+            let whole = rest.len() / FRAME_BYTES * FRAME_BYTES;
+            for f in rest[..whole].chunks_exact(FRAME_BYTES) {
+                emit(f, &mut frame);
+            }
+            frames += whole / FRAME_BYTES;
+            let tail = &rest[whole..];
+            self.partial[self.partial_len..self.partial_len + tail.len()].copy_from_slice(tail);
+            self.partial_len += tail.len();
+            // Always consume everything, or the ring stops draining.
+            self.transfer.consume(len);
+        }
+        Ok(frames)
     }
 }
 
