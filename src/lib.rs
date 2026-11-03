@@ -5,5 +5,7 @@
 
 #![no_std]
 
+pub mod battery;
 pub mod board;
+pub mod motion;
 pub mod touch;

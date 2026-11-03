@@ -36,6 +36,13 @@ embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time     = { version = "0.5.0", features = ["log"] }
 embassy-futures  = "0.1"
 embassy-sync     = "0.8"
+embedded-hal-async = "1.0"
+libm               = "0.2"
+# Async drivers for the BMI270 (with Bosch's config blob, BSD-3-Clause) and ES8311.
+oxstack-drivers = { version = "0.2.1", default-features = false, features = [
+  "bmi270",
+  "es8311",
+] }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"

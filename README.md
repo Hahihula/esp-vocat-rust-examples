@@ -46,6 +46,8 @@ board, so `esp-println` is built with the `jtag-serial` feature instead of `auto
 | Path | Contents |
 |------|----------|
 | `src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
+| `src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
+| `src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
 | `src/touch.rs` | Register-level driver for the two touch pads, baseline tracking and tap/long/swipe decoding |
 | `src/bin/NN_*.rs` | The demos |
 
@@ -186,4 +188,147 @@ INFO - back down
 INFO - raw/baseline: back 29062/26690 (+89 ‰) TOUCHED | front 28973/28759 (+7 ‰)
 INFO - LONG  back #1
 INFO - back up after 839 ms
+```
+
+### 02 – Battery and fuel gauge
+
+```bash
+cargo run --release --bin 02_battery
+```
+
+Reads the BQ27220 fuel gauge (I2C 0x55) every 5 s: voltage, current, average current
+and power, charge, health, remaining and full capacity, temperature, time to empty or
+full, cycle count and status flags. The TP4057 charger's status pins only drive the
+charge LED, so the gauge current is the only way to tell the charging state:
+
+| State | Current | Green LED |
+|-------|---------|-----------|
+| charging | above +15 mA | blinks at 1 Hz |
+| idle (full, or noise) | within ±15 mA | steady on |
+| discharging (on battery) | below −15 mA | short flash every 3 s |
+
+Touch pads:
+
+- **front tap:** full gauge dump
+- **back tap:** history of the last 32 state changes
+
+The console is USB, so it disappears while the cable is unplugged. To see what happened
+on battery, unplug USB (the cat keeps running if it is powered on), wait, and plug it back
+in. When charging starts again the demo prints how long it ran on battery, the capacity
+used, the charge change and the lowest voltage, followed by the history. The monitor
+needs to be restarted after replugging (`espflash monitor`).
+
+Expected output (on USB, battery charging):
+
+```
+INFO - === Demo 02: battery (BQ27220 fuel gauge) ===
+INFO - front tap = full dump, back tap = state history
+INFO - LED: blinking = charging, steady = idle/full, short flash every 3 s = on battery
+INFO - BQ27220 found, firmware 2002
+INFO - 4031 mV  +379 mA (avg +379)  100 %  650/650 mAh  44.9 °C, full in 0:00 h
+INFO - state: start -> charging
+INFO - 4032 mV  +379 mA (avg +379)  100 %  650/650 mAh  44.9 °C, full in 0:00 h
+```
+
+Observations on the test board:
+
+- **Charge level:** the gauge reports 100 % while the cell still charges at a constant
+  ~380 mA at only 4.03 V. A Li-ion cell isn't full at that point, so the charge
+  percentage looks uncalibrated. Voltage and current are measured directly and are
+  reliable. Reconfiguring the gauge needs unsealed data-memory writes and is out of
+  scope here.
+- **Temperature:** the BQ27220 has no thermistor on this board, so it reports its own
+  chip temperature. Inside the closed housing next to the charger, that reached about
+  45 °C while charging.
+- **Charge inhibit:** at that temperature the flags (0x4368) include `charge-inhibit`, most
+  likely the gauge's default 45 °C charge limit. The flag is information only; the TP4057
+  doesn't read it.
+- **Current and power disagree:** the gauge reports +379 mA at 4.04 V but an average power
+  of only 153 mW, which matches about 38 mA. The current also stays at exactly 379 mA with
+  no noise. One of the two registers is probably mis-scaled by the gauge's default
+  calibration; which one is still open.
+
+Full dump (front tap):
+
+```
+INFO - --- fuel gauge ---
+INFO - voltage          4043 mV
+INFO - current          +379 mA (average +379 mA)
+INFO - average power    +153 mW
+INFO - state of charge  100 %
+INFO - state of health  100 %
+INFO - capacity         650 mAh remaining, 650 mAh full, 650 mAh design
+INFO - temperature      45.3 °C
+INFO - time to empty    -
+INFO - time to full     0:00 h
+INFO - cycle count      0
+INFO - flags 4368:     present full charge-inhibit
+```
+
+### 03 – IMU
+
+```bash
+cargo run --release --bin 03_imu
+```
+
+The BMI270 (I2C 0x68) produces no data until the host uploads Bosch's 8 KB feature-engine
+configuration. The demo uses the async BMI270 driver from
+[`oxstack-drivers`](https://crates.io/crates/oxstack-drivers), which bundles that file
+(BSD-3-Clause, © Bosch Sensortec) and streams it in 256-byte chunks. That takes about
+210 ms at 400 kHz. The driver only polls; the INT1 line (GPIO21) is not used yet.
+
+The demo runs the sensor at ±4 g, ±1000 °/s and 200 Hz, reads it every 5 ms and feeds the
+samples into `MotionDetector` (`src/motion.rs`):
+
+| Event | Rule |
+|-------|------|
+| `TILTED` / `UPRIGHT` | Angle between gravity and the upright reference above 35° / below 20°, only from samples with \|a\| within 0.15 g of 1 g |
+| `UPSIDE DOWN` | Tilt above 140° |
+| `MOVING` / `STILL` | Rotation above 25 °/s / below 8 °/s for 1 s |
+| `SHAKE` | Three peaks of \|a\| above 1.8 g within 0.8 s, with \|a\| falling below 1.3 g between them |
+| `KNOCK` | Acceleration change of more than 0.35 g between two samples, with less than 60 °/s of rotation |
+
+The position at start-up is the upright reference, so stand the cat upright and keep it
+still for the first second. Upright, the sensor reads about [0, 0, −1] g, so the cat's
+"up" is the sensor's −Z axis.
+
+The green LED is on while the cat is moving. Touch pads:
+
+- **front tap:** take the current position as upright
+- **back tap:** detailed reading with the IMU die temperature
+
+A status line is printed once per second. Its "peak jerk" is the largest change of
+acceleration between two samples since the previous line, which helps tune the knock
+threshold. Measured on the test board: knocks on the housing 0.4–1.3 g, handling 0.1–0.3 g,
+shaking by hand 2–4.5 g with jerks up to 5.7 g.
+
+All events were checked on the test board, including upside down and shaking.
+
+Example output (tilting, then knocking on the still cat):
+
+```
+INFO - === Demo 03: BMI270 IMU (I2C 0x68) ===
+INFO - front tap = set upright, back tap = detailed reading
+INFO - BMI270 ready after 210 ms (config upload), ±4 g, ±1000 °/s, 200 Hz
+INFO - upright reference: [-0.01 +0.02 -1.00] g (sensor axes)
+INFO - acc [-0.01 +0.02 -1.00] g |a| 1.00  gyro [  -0.4   +0.2   -0.2] °/s  tilt   0.0°  peak jerk 0.01 g
+INFO - MOVING
+INFO - TILTED 40°
+INFO - acc [-0.74 -0.38 -0.24] g |a| 0.86  gyro [  +7.0 +225.9 +201.2] °/s  tilt  73.7°  peak jerk 0.26 g
+INFO - UPRIGHT
+INFO - KNOCK (1.30 g)
+INFO - acc [-0.03 +0.01 -0.99] g |a| 0.99  gyro [  -0.4   +0.2   -0.0] °/s  tilt   0.8°  peak jerk 1.30 g
+INFO - STILL
+```
+
+Turning it over and shaking it:
+
+```
+INFO - TILTED 36°
+INFO - acc [+0.33 -0.82 +0.26] g |a| 0.92  gyro [+116.9 +167.6  -10.6] °/s  tilt 106.4°  peak jerk 0.07 g
+INFO - UPSIDE DOWN
+INFO - TILTED 118°
+INFO - SHAKE
+INFO - SHAKE
+INFO - UPRIGHT
 ```
