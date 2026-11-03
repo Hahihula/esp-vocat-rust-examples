@@ -1,43 +1,46 @@
-//! Board-level constants and common initialisation for ESP-VoCat v1.0.
+//! Board-level constants and common initialisation for ESP-VoCat v1.2.
 //!
 //! | Function                  | GPIO                         |
 //! |---------------------------|------------------------------|
 //! | BOOT button               | 0 (active low)               |
 //! | Shared I2C SCL/SDA        | 1 / 2                        |
-//! | LCD reset (also touch)    | 3                            |
-//! | Speaker PA enable         | 4 (active high)              |
-//! | UART1 RX/TX (magnetic)    | 5 / 6                        |
-//! | Touch pad                 | 7 (TOUCH7)                   |
+//! | I2S DI (from ES7210)      | 3                            |
+//! | UART1 RX/TX (magnetic)    | 4 / 5                        |
+//! | Touch pads 1 / 2          | 6 / 7 (TOUCH6 / TOUCH7)      |
 //! | LCD tearing effect        | 8                            |
 //! | Peripheral power (LCD, SD)| 9 (active low)               |
 //! | Touch screen INT          | 10                           |
 //! | LCD QSPI D0/D1/D2/D3      | 46 / 13 / 11 / 12            |
 //! | LCD QSPI CLK / CS / DC    | 18 / 14 / 45                 |
+//! | Speaker PA enable         | 15 (active high)             |
 //! | microSD CLK / CMD / D0    | 16 / 38 / 17 (1-bit SD mode) |
 //! | USB D- / D+               | 19 / 20                      |
 //! | IMU INT1                  | 21                           |
-//! | I2S DI (from ES7210)      | 15                           |
 //! | I2S WS / BCK / DO / MCLK  | 39 / 40 / 41 / 42            |
 //! | Green LED                 | 43 (U0TXD, active low)       |
 //! | LCD backlight             | 44 (U0RXD, active high)      |
+//! | LCD/touch reset           | 47 (high = reset, via FET)   |
+//! | Codec power (ES8311/7210) | 48 (active high)             |
 
 use esp_hal::{
     Async,
     clock::CpuClock,
     gpio::{Level, Output, OutputConfig, OutputPin},
     i2c::master::{Config as I2cConfig, ConfigError, I2c, Instance as I2cInstance},
-    peripherals::{GPIO1, GPIO2, GPIO9, Peripherals},
+    peripherals::{GPIO1, GPIO2, GPIO9, GPIO47, GPIO48, Peripherals},
     time::Rate,
 };
 
 /// 7-bit addresses of the devices on the shared I2C bus (GPIO1/GPIO2).
 pub mod i2c_addr {
     /// ES8311 mono codec (speaker DAC), behind a level shifter.
+    /// Needs codec power ([`codec_power_on`](super::codec_power_on)).
     pub const ES8311: u8 = 0x18;
-    /// CST816S capacitive touch controller on the LCD flex.
+    /// CST816T capacitive touch controller on the LCD flex.
     /// Only answers while awake; it sleeps a few seconds after reset.
-    pub const CST816S: u8 = 0x15;
+    pub const CST816: u8 = 0x15;
     /// ES7210 4-channel microphone ADC, behind a level shifter.
+    /// Needs codec power ([`codec_power_on`](super::codec_power_on)).
     pub const ES7210: u8 = 0x40;
     /// BQ27220 battery fuel gauge on the base board.
     pub const BQ27220: u8 = 0x55;
@@ -79,6 +82,31 @@ pub fn i2c<'d>(
 /// rail is off until this is called. Keep the returned pin alive.
 pub fn peripheral_power_on<'d>(pin: GPIO9<'d>) -> Output<'d> {
     Output::new(pin, Level::Low, OutputConfig::default())
+}
+
+/// Switches on `CODEC_3V3` (GPIO48 drives the enable of the SY8088 buck
+/// converter), which powers the ES8311 and ES7210 codecs. Keep the returned
+/// pin alive. The codecs need a few milliseconds before they answer on I2C.
+pub fn codec_power_on<'d>(pin: GPIO48<'d>) -> Output<'d> {
+    Output::new(pin, Level::High, OutputConfig::default())
+}
+
+/// Shared reset of the LCD and its touch controller.
+///
+/// GPIO47 drives an N-MOSFET that pulls `LCD_RST` low, so a high level holds
+/// the LCD in reset. The gate has a pull-down, so reset is released by default.
+pub struct LcdReset<'d>(Output<'d>);
+
+impl<'d> LcdReset<'d> {
+    /// Creates the reset driver with reset released.
+    pub fn new(pin: GPIO47<'d>) -> Self {
+        Self(Output::new(pin, Level::Low, OutputConfig::default()))
+    }
+
+    /// Asserts or releases the reset.
+    pub fn set_reset(&mut self, asserted: bool) {
+        self.0.set_level(if asserted { Level::High } else { Level::Low });
+    }
 }
 
 /// The green LED on the MicBoard (GPIO43, active low).

@@ -1,8 +1,8 @@
 //! Demo 00: board bring-up.
 //!
 //! Prints chip and memory information from eFuse, tests and maps PSRAM into
-//! the heap, powers the LCD rail, scans the shared I2C bus (SCL GPIO1, SDA
-//! GPIO2) and reads an ID from every device it expects there.
+//! the heap, powers the LCD and codec rails, scans the shared I2C bus (SCL
+//! GPIO1, SDA GPIO2) and reads an ID from every device it expects there.
 
 #![no_std]
 #![no_main]
@@ -22,13 +22,12 @@ use esp_backtrace as _;
 use esp_hal::{
     Async,
     efuse::{self, InterfaceMacAddress},
-    gpio::{Level, Output, OutputConfig},
     i2c::master::{AcknowledgeCheckFailedReason, Error as I2cError, I2c},
     psram::Psram,
     timer::timg::TimerGroup,
 };
 use log::{info, warn};
-use vocat_rust_examples::board::{self, GreenLed, i2c_addr};
+use vocat_rust_examples::board::{self, GreenLed, LcdReset, i2c_addr};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -55,15 +54,16 @@ async fn main(_spawner: Spawner) -> ! {
     check_heap();
 
     // The touch controller sits on the LCD flex and is powered by VCC_3V3. It
-    // shares its reset line with the LCD (GPIO3) and only answers on I2C for
+    // shares its reset line with the LCD (GPIO47) and only answers on I2C for
     // a few seconds after reset, before it goes to sleep.
     let _power = board::peripheral_power_on(peripherals.GPIO9);
+    let _codec_power = board::codec_power_on(peripherals.GPIO48);
+    let mut lcd_rst = LcdReset::new(peripherals.GPIO47);
+    lcd_rst.set_reset(true);
     Timer::after(Duration::from_millis(20)).await;
-    let mut lcd_rst = Output::new(peripherals.GPIO3, Level::Low, OutputConfig::default());
-    Timer::after(Duration::from_millis(10)).await;
-    lcd_rst.set_high();
+    lcd_rst.set_reset(false);
     Timer::after(Duration::from_millis(100)).await;
-    info!("VCC_3V3 (LCD, touch, SD) on, LCD/touch reset released");
+    info!("VCC_3V3 (LCD, touch, SD) and CODEC_3V3 on, LCD/touch reset released");
 
     match board::i2c(peripherals.I2C0, peripherals.GPIO1, peripherals.GPIO2) {
         Ok(mut i2c) => {
@@ -101,9 +101,9 @@ fn print_chip_info() {
     info!(
         "Flash type (eFuse): {}",
         if octal_flash {
-            "octal (WROOM-2, VoCat v1.0?)"
+            "octal (WROOM-2, VoCat v1.0: these demos need v1.2!)"
         } else {
-            "quad (WROOM-1, VoCat v1.2?)"
+            "quad (WROOM-1, VoCat v1.2)"
         }
     );
 
@@ -190,7 +190,7 @@ async fn scan_i2c(i2c: &mut I2c<'_, Async>) {
 
     for addr in [
         i2c_addr::ES8311,
-        i2c_addr::CST816S,
+        i2c_addr::CST816,
         i2c_addr::ES7210,
         i2c_addr::BQ27220,
         i2c_addr::BMI270,
@@ -204,7 +204,7 @@ async fn scan_i2c(i2c: &mut I2c<'_, Async>) {
 fn device_name(addr: u8) -> &'static str {
     match addr {
         i2c_addr::ES8311 => "ES8311 speaker codec",
-        i2c_addr::CST816S => "CST816S touch controller",
+        i2c_addr::CST816 => "CST816 touch controller",
         i2c_addr::ES7210 => "ES7210 microphone ADC",
         i2c_addr::BQ27220 => "BQ27220 fuel gauge",
         i2c_addr::BMI270 => "BMI270 IMU",
@@ -264,11 +264,11 @@ async fn identify_devices(i2c: &mut I2c<'_, Async>) {
         Err(_) => warn!("  BMI270: no answer"),
     }
 
-    // CST816S: chip ID at 0xA7 (B4 = CST816S, B5 = CST816T, B6 = CST816D),
+    // CST816: chip ID at 0xA7 (B4 = CST816S, B5 = CST816T, B6 = CST816D),
     // firmware version at 0xA9.
     match (
-        read_regs::<1>(i2c, i2c_addr::CST816S, 0xA7).await,
-        read_regs::<1>(i2c, i2c_addr::CST816S, 0xA9).await,
+        read_regs::<1>(i2c, i2c_addr::CST816, 0xA7).await,
+        read_regs::<1>(i2c, i2c_addr::CST816, 0xA9).await,
     ) {
         (Ok([id]), Ok([fw])) => {
             let name = match id {
