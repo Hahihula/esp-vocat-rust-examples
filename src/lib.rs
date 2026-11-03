@@ -13,3 +13,4 @@ pub mod display;
 pub mod motion;
 mod st77916_init;
 pub mod touch;
+pub mod touchscreen;

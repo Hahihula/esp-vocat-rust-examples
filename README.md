@@ -38,6 +38,13 @@ hold **BOOT**, press **RST**, then release **BOOT** to enter download mode by ha
 Log verbosity follows `ESP_LOG` (default `info`), for example
 `ESP_LOG=debug cargo run --release --bin 00_bringup`.
 
+Every demo waits 2 s after boot (`board::wait_for_console()`) before printing. The
+USB-Serial-JTAG console re-enumerates on every reset, and without the wait the first
+lines are lost when the monitor reconnects.
+
+PSRAM runs at 80 MHz (`board::psram()`), twice the esp-hal default. Demo 00 measures
+about 33 MiB/s for both reads and writes, with no errors.
+
 The console only uses USB-Serial-JTAG. UART0 TX (GPIO43) drives the green LED on this
 board, so `esp-println` is built with the `jtag-serial` feature instead of `auto`.
 
@@ -48,6 +55,9 @@ board, so `esp-println` is built with the `jtag-serial` feature instead of `auto
 | `src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
 | `src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
 | `src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
+| `src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
+| `src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |
+| `src/touchscreen.rs` | CST816T touch controller driver (position, controller gestures) |
 | `src/touch.rs` | Register-level driver for the two touch pads, baseline tracking and tap/long/swipe decoding |
 | `src/bin/NN_*.rs` | The demos |
 
@@ -102,7 +112,7 @@ INFO - eFuse: package 0, in-package PSRAM capacity code 3, PSRAM vendor 2, flash
 INFO - PSRAM initialized successfully in Octal SPI mode
 INFO - PSRAM size: 16 MB
 INFO - PSRAM: 16384 KiB mapped at 0x3c020000
-INFO - PSRAM test: 0 bad words, write 902 ms (~17 MiB/s), read 604 ms (~26 MiB/s)
+INFO - PSRAM test: 0 bad words, write 478 ms (~33 MiB/s), read 471 ms (~33 MiB/s)
 INFO - Heap: 1 MiB allocation at 0x3c020000 OK
 INFO - VCC_3V3 (LCD, touch, SD) and CODEC_3V3 on, LCD/touch reset released
 INFO - Scanning I2C bus (SCL=GPIO1, SDA=GPIO2)...
@@ -123,8 +133,8 @@ INFO - Bring-up done. The green LED blinks once per second.
 INFO - alive, uptime 11 s
 ```
 
-Without `CODEC_3V3` (GPIO48) the ES8311 and ES7210 do not answer at all. The PSRAM runs at
-the esp-hal default clock here; the display demos will need more bandwidth.
+Without `CODEC_3V3` (GPIO48) the ES8311 and ES7210 do not answer at all. At the esp-hal
+default PSRAM clock of 40 MHz the same test gave only 17 MiB/s writes and 26 MiB/s reads.
 
 ### 01 – Touch pads
 
@@ -332,3 +342,160 @@ INFO - SHAKE
 INFO - SHAKE
 INFO - UPRIGHT
 ```
+
+### 04 – Round LCD
+
+```bash
+cargo run --release --bin 04_display
+```
+
+The 1.85" 360×360 round panel has an ST77916 controller on QSPI (CLK GPIO18, D0–D3
+GPIO46/13/11/12, CS GPIO14, DC GPIO45, reset GPIO47, backlight GPIO44). No Rust crate
+supports it, so `src/display.rs` implements the protocol of Espressif's
+`esp_lcd_st77916` driver. While CS is low:
+
+1. A 32-bit header goes out on one data line with DC low: `02 00 cmd 00` for a command,
+   `32 00 2C 00` (RAMWR) for pixels.
+2. DC goes high, then either the command parameters follow on one line, or the pixels
+   (RGB565, high byte first) on all four lines.
+
+The init sequence is MADCTL, COLMOD (16 bit), Espressif's vendor table from the BSP, INVON
+and DISPON. CS is a plain GPIO so it can stay low across the transfers of a frame.
+
+Pixel data goes through `SpiDma` (SPI2, DMA channel 0). Each chunk of at most 32 KB is
+first copied by the CPU into a buffer in internal RAM and sent from there. DMA directly
+out of the PSRAM frame buffer showed stale data: rows redrawn every frame (the eyes in
+demo 06) came out with the picture an earlier program had left in PSRAM. esp-hal writes
+the cache back before such a transfer, yet the stale rows still appeared. The CPU copy
+reads through the cache, so it always sends the current pixels.
+
+Drawing uses [embedded-graphics](https://crates.io/crates/embedded-graphics) on a
+`FrameBuffer`, a full 253 KiB RGB565 frame in PSRAM. It tracks which rows changed, and
+`Lcd::flush` sends only that band of rows, which is contiguous in memory. The backlight
+is LEDC PWM at 20 kHz (`Backlight::set`, `Backlight::fade`).
+
+Screens (front tap = next screen, back tap = brightness 100/50/20/5 %):
+
+1. **Test pattern:** colour bars, a grey ramp, a circle along the round edge, a centre dot
+   and text.
+2. **Solid colours:** red, green, blue, white, black, one per second. Use it to check the
+   colour order and inversion.
+3. **Bouncing ball:** reflects off the round edge, and only the changed rows are sent.
+4. **Benchmark:** a scrolling gradient, every frame redrawn and sent in full.
+
+Measured at a 40 MHz SPI clock: a full frame takes 18 ms to send (about 13 MiB/s), and
+the benchmark runs at 36 fps, with 7 ms of drawing and 18 ms of sending per frame. Before
+the bounce buffer it was 14 ms and 42 fps; the CPU copy out of PSRAM costs about 4 ms
+per full frame. The bus itself allows 20 MiB/s. At 80 MHz a frame took only 8 ms and the benchmark reached 59 fps, but the picture was
+unrecognisable. The LCD pins are routed through the GPIO matrix rather than IO_MUX,
+which doesn't keep up. The clock source is 80 MHz with integer dividers, so 40 MHz is the
+next usable setting.
+
+Transfers are safe to cancel. A screen is a future that is dropped on a tap, often in the
+middle of a frame. Without the guard that raises CS on drop, CS stayed low and the panel
+read the next commands as pixel data, so the screen froze. Now an aborted frame just
+ends early.
+
+Expected output:
+
+```
+INFO - === Demo 04: round LCD 360x360 (ST77916, QSPI) ===
+INFO - front tap = next screen, back tap = brightness
+INFO - PSRAM heap: 16384 KiB (80 MHz)
+INFO - LCD initialised, SPI clock 40 MHz
+INFO - full frame (253 KiB) sent in 18 ms (~13 MiB/s)
+INFO - screen: TestPattern
+```
+
+On the benchmark screen:
+
+```
+INFO -   benchmark: 36 fps, per frame 7 ms drawing + 18 ms sending
+```
+
+### 05 – Touchscreen paint
+
+```bash
+cargo run --release --bin 05_paint
+```
+
+Finger painting on the round LCD. The CST816T touch controller (I2C 0x15, INT GPIO10)
+shares its reset line with the LCD, so `Lcd::new` resets both. Right after that,
+`Cst816::init` disables the controller's auto-sleep (register 0xFE); otherwise it stops
+answering on I2C a few seconds after reset. It also enables INT pulses on touch and on
+movement (0xFA = 0x60) and double-click detection (0xEC).
+
+The demo waits for a falling edge on INT and polls every 15 ms while a finger is down.
+Each report gives one point. Consecutive points are joined with a line of the brush
+width and a round cap, so fast strokes stay continuous. Only the changed rows are sent
+to the LCD.
+
+- **Colour:** touch one of the seven dots along the bottom edge (a touch that starts on
+  the palette doesn't paint)
+- **front pad tap:** clear the canvas
+- **back pad tap:** next brush size (4, 8, 14, 24 px), previewed at the top
+
+The touch coordinates match the display orientation without any mapping (0..359,
+origin top left). The controller also reports its own gestures (click, swipes, long press),
+which the demo logs.
+
+Example output:
+
+```
+INFO - === Demo 05: touchscreen paint (CST816T) ===
+INFO - paint with a finger, touch a colour dot to pick it
+INFO - front pad tap = clear, back pad tap = brush size
+INFO - touch controller: chip ID B5, firmware 02
+INFO - down at ( 89, 292)
+INFO - colour 0
+INFO - down at (112, 231)
+INFO - gesture SwipeUp at (125, 195)
+INFO - up   at (142, 162), 8 points in 168 ms
+INFO - down at ( 75, 108)
+INFO - gesture SwipeRight at (118, 106)
+INFO - up   at (248,  93), 8 points in 168 ms
+```
+
+### 06 – Googly cat eyes
+
+```bash
+cargo run --release --bin 06_cat_eyes
+```
+
+Two cat eyes on the round LCD whose pupils are moved by the accelerometer, like googly
+eyes. Each frame (every 20 ms) the demo reads the BMI270 and takes "down" in screen
+coordinates from it. The accelerometer measures the reaction to gravity plus the opposite
+of any motion, so the pupils both fall towards the ground and swing when the cat is moved.
+Each pupil is a damped point mass pulled by that vector and bounces off the edge of the
+eye.
+
+Upright, the sensor reads [0, 0, −1] g, so screen-down is the sensor's +Z and
+screen-right its +X (`SCREEN_X`, `SCREEN_Y` in the demo).
+
+| Input | Reaction |
+|-------|----------|
+| tilt or move the cat | pupils fall towards the lower side and swing |
+| touch an eye on the screen | that eye blinks |
+| touch elsewhere on the screen | both eyes blink |
+| shake (`MotionDetector`) | dizzy, spinning pupils for 2 s |
+| back pad tap or hold (petting) | happy `^ ^` eyes for 1.5 s |
+
+The eyes also blink on their own every 2–6 s; an upper and a lower lid close towards the
+middle. The face (nose, mouth, whiskers) is drawn once, and each frame redraws only the
+eye area.
+
+It runs at the full 50 fps (one frame per 20 ms), including the copy of every frame
+through the internal bounce buffer. Example output (upright, then shaken):
+
+```
+INFO - === Demo 06: googly cat eyes (BMI270 + LCD) ===
+INFO - tilt or move the cat; touch an eye to blink; shake = dizzy; back pad tap = happy
+INFO - 50 fps, down on screen (+0.01, +1.00) g
+INFO - 50 fps, down on screen (+0.56, -0.12) g
+INFO - shake: dizzy
+INFO - 50 fps, down on screen (+0.17, +0.85) g
+```
+
+This is the first demo with two devices on the I2C bus at the same time: the BMI270 and
+the CST816T share it through `embassy-embedded-hal`'s `I2cDevice` over an async
+`Mutex`.

@@ -13,7 +13,8 @@
 //!    with DC high. Pixels are RGB565, high byte first.
 //!
 //! The whole frame lives in a [`FrameBuffer`] in PSRAM. [`Lcd::flush`] sends
-//! the rows that changed since the last flush, at most 32 KB per DMA transfer.
+//! the rows that changed since the last flush, copied in chunks of up to 32 KB
+//! into internal RAM and sent from there with DMA.
 //!
 //! [`board::peripheral_power_on`]: crate::board::peripheral_power_on
 
@@ -45,7 +46,7 @@ use esp_hal::{
     },
     time::Rate,
 };
-use static_cell::StaticCell;
+use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::{board::LcdReset, st77916_init::INIT_SEQUENCE};
 
@@ -59,8 +60,13 @@ const ROW_BYTES: usize = WIDTH as usize * 2;
 
 /// Bytes per DMA transfer. The SPI peripheral handles at most 32 KiB.
 const CHUNK: usize = 32_000;
+/// Size of the DMA copy buffer esp-hal uses for data outside internal RAM
+/// (command parameters from flash). Pixels go through [`Lcd::bounce`].
+const COPY_BUF: usize = 256;
 
-/// SPI clock. The LCD pins go through the GPIO matrix, not IO_MUX.
+/// SPI clock. The LCD pins go through the GPIO matrix, not IO_MUX: at 80 MHz
+/// the picture is garbage, so this is the next step down from the 80 MHz
+/// source (integer dividers only).
 pub const SPI_CLOCK: Rate = Rate::from_mhz(40);
 
 mod cmd {
@@ -106,6 +112,13 @@ pub struct Lcd {
     spi: SpiDma<'static, Async>,
     cs: Output<'static>,
     dc: Output<'static>,
+    /// Pixel chunks are copied here (internal RAM) before each DMA transfer.
+    ///
+    /// DMA straight out of the PSRAM frame buffer showed stale data: rows
+    /// that are redrawn every frame appeared with content from an earlier
+    /// program. The CPU copy reads through the cache, so it always sees the
+    /// current pixels.
+    bounce: &'static mut [u8; CHUNK],
 }
 
 impl Lcd {
@@ -119,7 +132,10 @@ impl Lcd {
     ) -> Result<Self, Error> {
         // The RX buffer is unused (half-duplex writes only) but required.
         let rx = dma_rx_buffer!(32).expect("valid DMA RX buffer");
-        let tx = dma_tx_buffer!(CHUNK).expect("valid DMA TX buffer");
+        let tx = dma_tx_buffer!(COPY_BUF).expect("valid DMA TX buffer");
+        // Initialised statically, so the 32 KB never pass through the stack.
+        static BOUNCE: ConstStaticCell<[u8; CHUNK]> = ConstStaticCell::new([0; CHUNK]);
+        let bounce = BOUNCE.take();
 
         let config = Config::default()
             .with_frequency(SPI_CLOCK)
@@ -139,6 +155,7 @@ impl Lcd {
             spi,
             cs: Output::new(pins.cs, Level::High, OutputConfig::default()),
             dc: Output::new(pins.dc, Level::Low, OutputConfig::default()),
+            bounce,
         };
 
         reset.set_reset(true);
@@ -206,8 +223,10 @@ impl Lcd {
         let _cs = CsGuard::select(&mut self.cs);
         header(&mut self.spi, &mut self.dc, OPCODE_WRITE_COLOR, cmd::RAMWR).await?;
         for chunk in pixels.chunks(CHUNK) {
+            let buf = &mut self.bounce[..chunk.len()];
+            buf.copy_from_slice(chunk);
             self.spi
-                .half_duplex_write_async(DataMode::Quad, Command::None, Address::None, 0, chunk)
+                .half_duplex_write_async(DataMode::Quad, Command::None, Address::None, 0, buf)
                 .await?;
         }
         Ok(())
