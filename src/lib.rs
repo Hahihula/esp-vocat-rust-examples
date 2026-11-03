@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+pub mod audio;
 pub mod battery;
 pub mod board;
 pub mod display;

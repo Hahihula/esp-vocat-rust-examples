@@ -53,6 +53,7 @@ board, so `esp-println` is built with the `jtag-serial` feature instead of `auto
 | Path | Contents |
 |------|----------|
 | `src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
+| `src/audio.rs` | I2S output stream to the ES8311 (DMA ring buffer) and a small synthesiser |
 | `src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
 | `src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
 | `src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
@@ -499,3 +500,45 @@ INFO - 50 fps, down on screen (+0.17, +0.85) g
 This is the first demo with two devices on the I2C bus at the same time: the BMI270 and
 the CST816T share it through `embassy-embedded-hal`'s `I2cDevice` over an async
 `Mutex`.
+
+### 07 – Speaker
+
+```bash
+cargo run --release --bin 07_speaker
+```
+
+Plays generated sound through I2S, the ES8311 codec (I2C 0x18) and the NS4150B 3 W
+amplifier. The start-up order is:
+
+1. Codec power on (`CODEC_3V3`, GPIO48).
+2. I2S0 as master on DMA channel 1: 44.1 kHz, 16-bit stereo, Philips format. MCLK on
+   GPIO42, BCLK GPIO40, WS GPIO39, DOUT GPIO41.
+3. ES8311 init, using the driver from `oxstack-drivers`. It runs the codec as I2S slave
+   with its clock derived from BCLK, so the codec itself needs no MCLK; MCLK is still
+   generated for the ES7210 on the same bus. Then DAC volume, playback mode and unmute.
+4. Amplifier enable (GPIO15) last, so the codec's power-up doesn't pop.
+
+`AudioOut` streams through an 8 KB DMA ring buffer (about 46 ms). An audio task keeps it
+full from `Synth`, a one-voice synthesiser with a sine table, triangle and square waves,
+an attack/release envelope, note sequences and exponential sweeps. The main task sends
+it commands over a channel. The ring must never run dry: the first version topped it up
+by only one descriptor per wake-up, and a short delay (the codec's I2C init) let the DMA
+catch up and stop with a descriptor error. `AudioOut::fill` now refills the whole ring
+each time, and the ring starts filled with silence.
+
+Touch pads:
+
+- **front tap:** next item: C major scale, "Ode to Joy" (triangle wave), a 100 Hz → 8 kHz
+  sweep over 4 s, and A4 (440 Hz) as sine, triangle and square
+- **front long touch:** stop
+- **back tap:** next codec volume step (−30, −20, −12, −6, 0 dB, starting at −12 dB),
+  confirmed with a chime
+
+Expected output:
+
+```
+INFO - === Demo 07: speaker (I2S, ES8311, NS4150B) ===
+INFO - front tap = next item, front long touch = stop, back tap = volume
+INFO - I2S running: 44100 Hz, 16-bit stereo
+INFO - ES8311 in playback mode, volume -12 dB
+```
