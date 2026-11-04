@@ -110,7 +110,10 @@ impl<I: I2c> Es7210<I> {
 
     /// Reads the chip ID; [`CHIP_ID`] for an ES7210.
     pub async fn chip_id(&mut self) -> Result<[u8; 2], I::Error> {
-        Ok([self.read(reg::CHIP_ID1).await?, self.read(reg::CHIP_ID0).await?])
+        Ok([
+            self.read(reg::CHIP_ID1).await?,
+            self.read(reg::CHIP_ID0).await?,
+        ])
     }
 
     /// Configures the codec as I2S slave with 16-bit samples and MIC1/MIC2
@@ -139,7 +142,8 @@ impl<I: I2c> Es7210<I> {
 
         // es7210_set_fs(): 16-bit, standard I2S.
         let iface = self.read(reg::SDP_INTERFACE1).await?;
-        self.write(reg::SDP_INTERFACE1, (iface & 0x1C) | 0x60).await?;
+        self.write(reg::SDP_INTERFACE1, (iface & 0x1C) | 0x60)
+            .await?;
 
         // es7210_start()
         self.write(reg::CLOCK_OFF, clock_off).await?;
@@ -160,7 +164,12 @@ impl<I: I2c> Es7210<I> {
 
     /// es7210_mic_select() for MIC1 and MIC2.
     async fn select_mics(&mut self, gain: Gain) -> Result<(), I::Error> {
-        for r in [reg::MIC1_GAIN, reg::MIC2_GAIN, reg::MIC3_GAIN, reg::MIC4_GAIN] {
+        for r in [
+            reg::MIC1_GAIN,
+            reg::MIC2_GAIN,
+            reg::MIC3_GAIN,
+            reg::MIC4_GAIN,
+        ] {
             self.update(r, 0x10, 0x00).await?;
         }
         self.write(reg::MIC12_POWER, 0xFF).await?;

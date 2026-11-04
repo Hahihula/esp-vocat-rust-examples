@@ -216,9 +216,12 @@ fn draw_test_pattern(fb: &mut FrameBuffer) {
     ];
     let bar_w = u32::from(WIDTH) / BARS.len() as u32;
     for (i, color) in BARS.iter().enumerate() {
-        let _ = Rectangle::new(Point::new((i as u32 * bar_w) as i32, 60), Size::new(bar_w, 110))
-            .into_styled(PrimitiveStyle::with_fill(*color))
-            .draw(fb);
+        let _ = Rectangle::new(
+            Point::new((i as u32 * bar_w) as i32, 60),
+            Size::new(bar_w, 110),
+        )
+        .into_styled(PrimitiveStyle::with_fill(*color))
+        .draw(fb);
     }
 
     // A 32-step grey ramp below.
@@ -239,7 +242,8 @@ fn draw_test_pattern(fb: &mut FrameBuffer) {
         .draw(fb);
 
     let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
-    let _ = Text::with_alignment("ESP-VoCat", Point::new(180, 40), style, Alignment::Center).draw(fb);
+    let _ =
+        Text::with_alignment("ESP-VoCat", Point::new(180, 40), style, Alignment::Center).draw(fb);
     let _ = Text::with_alignment(
         "ST77916 360x360",
         Point::new(180, 270),
@@ -247,8 +251,13 @@ fn draw_test_pattern(fb: &mut FrameBuffer) {
         Alignment::Center,
     )
     .draw(fb);
-    let _ = Text::with_alignment("no_std Rust", Point::new(180, 300), style, Alignment::Center)
-        .draw(fb);
+    let _ = Text::with_alignment(
+        "no_std Rust",
+        Point::new(180, 300),
+        style,
+        Alignment::Center,
+    )
+    .draw(fb);
 }
 
 #[allow(
@@ -273,7 +282,8 @@ async fn bouncing_ball(lcd: &mut Lcd, fb: &mut FrameBuffer) {
     let mut frames = 0u32;
     let mut fps_text = alloc::string::String::with_capacity(16);
     let mut window_start = Instant::now();
-    let ball = |x: f32, y: f32| Circle::with_center(Point::new(x as i32, y as i32), (R * 2.0) as u32);
+    let ball =
+        |x: f32, y: f32| Circle::with_center(Point::new(x as i32, y as i32), (R * 2.0) as u32);
 
     loop {
         let _ = ball(x, y)

@@ -26,8 +26,7 @@ use esp_hal::{
     dma::{DmaRxStreamBuf, DmaTxStreamBuf},
     dma_rx_stream_buffer, dma_tx_stream_buffer,
     i2s::master::{
-        Channels, DataFormat, Error as I2sError, I2s, I2sRxDmaTransfer, I2sTxDmaTransfer,
-        TdmConfig,
+        Channels, DataFormat, Error as I2sError, I2s, I2sRxDmaTransfer, I2sTxDmaTransfer, TdmConfig,
     },
     peripherals::{DMA_CH1, GPIO3, GPIO39, GPIO40, GPIO41, GPIO42, I2S0},
     time::Rate,
@@ -55,11 +54,14 @@ pub enum Error {
     Config(esp_hal::i2s::master::ConfigError),
     I2s(I2sError),
     Dma(esp_hal::dma::DmaError),
+    /// Restarting after a DMA error failed; the output is gone.
+    Stopped,
 }
 
 /// A running I2S output stream.
 pub struct AudioOut {
-    transfer: I2sTxDmaTransfer<'static, Async, DmaTxStreamBuf>,
+    /// `None` only if restarting after an error failed.
+    transfer: Option<I2sTxDmaTransfer<'static, Async, DmaTxStreamBuf>>,
 }
 
 impl AudioOut {
@@ -85,7 +87,9 @@ impl AudioOut {
         // there's slack before the first refill.
         while buf.push(&[0u8; 512]) > 0 {}
         let transfer = tx.write(buf).map_err(|(e, _, _)| Error::I2s(e))?;
-        Ok(Self { transfer })
+        Ok(Self {
+            transfer: Some(transfer),
+        })
     }
 
     /// Waits until there is room in the ring buffer, then lets `render` fill
@@ -93,15 +97,18 @@ impl AudioOut {
     /// both channels.
     ///
     /// If this isn't called again before the ring runs dry (about 46 ms), the
-    /// DMA stops with a descriptor error and the stream is dead.
+    /// DMA stops with a descriptor error. The stream is then restarted (the
+    /// error is still returned, so the caller can log it); the ring replays
+    /// its old contents once.
     pub async fn fill(&mut self, mut render: impl FnMut(&mut [i16])) -> Result<(), Error> {
-        self.transfer
-            .wait_for_available_async()
-            .await
-            .map_err(Error::Dma)?;
+        let transfer = self.transfer.as_mut().ok_or(Error::Stopped)?;
+        if let Err(e) = transfer.wait_for_available_async().await {
+            self.restart()?;
+            return Err(Error::Dma(e));
+        }
         let mut mono = [0i16; 256];
-        while self.transfer.available_bytes() >= FRAME_BYTES {
-            self.transfer.push_with(|buf| {
+        while transfer.available_bytes() >= FRAME_BYTES {
+            transfer.push_with(|buf| {
                 let frames = (buf.len() / FRAME_BYTES).min(mono.len());
                 render(&mut mono[..frames]);
                 for (frame, s) in buf.chunks_exact_mut(FRAME_BYTES).zip(&mono[..frames]) {
@@ -111,6 +118,15 @@ impl AudioOut {
                 frames * FRAME_BYTES
             });
         }
+        Ok(())
+    }
+
+    /// Stops the dead transfer and starts a new one on the same ring.
+    fn restart(&mut self) -> Result<(), Error> {
+        let transfer = self.transfer.take().ok_or(Error::Stopped)?;
+        let (tx, buf) = transfer.stop();
+        let transfer = tx.write(buf).map_err(|(e, _, _)| Error::I2s(e))?;
+        self.transfer = Some(transfer);
         Ok(())
     }
 }

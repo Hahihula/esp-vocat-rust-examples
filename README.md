@@ -53,7 +53,7 @@ board, so `esp-println` is built with the `jtag-serial` feature instead of `auto
 | Path | Contents |
 |------|----------|
 | `src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
-| `src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers), and a small synthesiser |
+| `src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers; output restarts itself after running dry), and a small synthesiser |
 | `src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
 | `src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
 | `src/es7210.rs` | ES7210 microphone ADC driver, ported from Espressif's `esp_codec_dev` |
@@ -61,6 +61,9 @@ board, so `esp-println` is built with the `jtag-serial` feature instead of `auto
 | `src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |
 | `src/touchscreen.rs` | CST816T touch controller driver (position, controller gestures) |
 | `src/touch.rs` | Register-level driver for the two touch pads, baseline tracking and tap/long/swipe decoding |
+| `src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP client |
+| `src/clock.rs` | Local time from Unix time: fixed UTC offset plus EU summer time, weekday |
+| `src/radio.rs` | Internet radio: HTTP stream download, MP3 decoding (`nanomp3-core`), resampling and volume ramp |
 | `src/bin/NN_*.rs` | The demos |
 
 ## Demos
@@ -600,4 +603,108 @@ INFO - CLAP (0.0 dBFS)
 INFO - MIC1  -28.5 dBFS (peak  -12.6)  MIC2  -29.6 dBFS (peak  -17.4)
 INFO - gain 0 dB
 INFO - MIC1  -88.0 dBFS (peak  -78.3)  MIC2  -88.2 dBFS (peak  -80.8)
+```
+
+### 09 – Internet radio alarm clock
+
+```bash
+cp .cargo/radio.toml.example .cargo/radio.toml   # then fill in your Wi-Fi
+cargo run --release --bin 09_radio_alarm
+```
+
+A bedside alarm clock. It gets the time over Wi-Fi and wakes you with an internet radio
+stream that starts at −40 dB and rises to full volume over a minute. No SD card is
+needed.
+
+**Configuration.** Cargo reads `.cargo/radio.toml` (gitignored) at build time; rebuild
+after changing it.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `WIFI_SSID`, `WIFI_PASSWORD` | – | 2.4 GHz network, WPA2-Personal, or open with an empty password |
+| `RADIO_URL` | `http://ice1.somafm.com/groovesalad-128-mp3` | MP3 stream over plain HTTP (HTTPS is not supported) |
+| `TZ_OFFSET_MIN` | `60` | Local standard time offset from UTC in minutes |
+| `TZ_EU_DST` | `1` | EU summer time (last Sunday of March to last Sunday of October) |
+
+**How it works.**
+
+- **Time:** `esp-radio` Wi-Fi with automatic reconnect, `embassy-net` with DHCP, and an
+  SNTP query to `pool.ntp.org`. The clock runs on the system timer from there and is
+  resynced every 6 hours.
+- **Download:** `radio::stream_task` runs only while the radio is on. It sends an
+  HTTP/1.0 GET (so the body is never chunked) without `Icy-MetaData`, follows up to three
+  redirects, and writes the body into a 32 KiB pipe (2 s at 128 kbit/s). It reconnects
+  after 3 s if the stream fails.
+- **Decoding:** `radio::Player` runs inside the audio task's refill callback. Playback
+  starts once 16 KiB is buffered. It decodes one MP3 frame at a time with
+  [`nanomp3-core`](https://crates.io/crates/nanomp3-core) (no allocation, about 22 KiB of
+  state), mixes stereo to mono and converts other sample rates to 44.1 kHz by linear
+  interpolation. The gain follows the ramp linearly in dB. If the buffer runs dry, it
+  goes quiet until it has buffered again.
+- **Fallback:** while ringing, if the stream produces no audio for 15 s, a square-wave
+  beeper is mixed in and rises from 20 % to full over 30 s. It goes off again when the
+  stream recovers. The alarm gives up after 30 minutes.
+
+**Screen** (touchscreen):
+
+- **Clock:** 7-segment HH:MM with a blinking colon, a ring of 60 dots for the seconds,
+  weekday and date, alarm state and volume. Touch it to open the editor.
+- **Editor:** +/− for hours and minutes (hold to repeat), ON/OFF, OK. It closes itself
+  after 30 s without a touch.
+- **Ringing:** orange "WAKE UP"; touch to stop.
+- The backlight dims to 15 % between 22:00 and 07:00, and a touch brings it back to full
+  for 20 s.
+
+**Touch pads:**
+
+| | Normal | Ringing |
+|---|---|---|
+| back tap | alarm on/off | stop |
+| front tap | radio on/off (3 s ramp) | snooze 5 minutes |
+| front long touch | alarm at the next minute (for testing) | – |
+| back long touch | next codec volume step (−30 … 0 dB, starts at −12 dB) | – |
+
+The alarm time is kept in RAM only. After a reset it is 07:00 and off.
+
+**Measured** with the 128 kbit/s stream: the decoder uses 14–16 % of the CPU, about 383
+frames per 10 s, with the 32 KiB buffer full and no underruns, including after switching the
+radio off and on repeatedly.
+
+Three pitfalls:
+
+- **Wi-Fi start-up starves the audio task.** Starting Wi-Fi keeps the CPU busy for
+  longer than the 46 ms audio ring lasts, and the DMA stops with a descriptor error.
+  At first that silenced the output for good: the player never ran, and the download
+  filled up and stalled. `AudioOut::fill` now restarts the DMA stream after the error.
+  The log shows `audio ran dry (DescriptorError), restarted` twice during start-up, and
+  never after.
+- **Compiler bug at `opt-level = "s"`.** The Xtensa LLVM backend fails on the MP3
+  decoder with `Cannot select: i32 = Constant<4608>`, whether it outputs `i16` or `f32`.
+  A per-package `opt-level` doesn't help, because fat LTO generates code for everything at
+  the binary's level. The release profile therefore uses `opt-level = 2` for all demos.
+- **Shared I2C.** The ES8311 and the CST816T are on one bus, shared through
+  `embassy-embedded-hal`'s `I2cDevice`. The LCD reset also resets the touch controller,
+  so the LCD is set up before the touch controller.
+
+Example output:
+
+```
+INFO - Wi-Fi connected to 'Xiaomi_0B86_24' (channel 11, RSSI -25 dBm)
+INFO - DHCP: address 192.168.31.131/24
+INFO - NTP: Wed 2026-11-04 11:56:07 (UTC+1:00)
+INFO - Radio stream: http://ice1.somafm.com/groovesalad-128-mp3
+INFO - alarm off
+INFO - test: alarm 11:58
+INFO - ALARM Wed 2026-11-04 11:58:00
+INFO - radio: connecting to ice1.somafm.com (173.239.76.148:80)
+INFO - radio: Content-Type: audio/mpeg
+INFO - radio: icy-br: 128
+INFO - radio: icy-genre: Ambient Chill
+INFO - radio: icy-name: Groove Salad: a nicely chilled plate of ambient beats and grooves. [SomaFM]
+INFO - radio: buffered, playing
+INFO - radio: MPEG layer 3, 128 kbit/s, 44100 Hz, Stereo
+INFO - Wed 2026-11-04 11:58:10 | 147 kbit/s, buffer 32 KiB, 341 frames, decode 14% CPU, gain -34.0 dB, underruns 0
+INFO - Wed 2026-11-04 11:58:20 | 127 kbit/s, buffer 32 KiB, 383 frames, decode 16% CPU, gain -27.4 dB, underruns 0
+INFO - alarm snoozed for 5 minutes
+INFO - radio: disconnected
 ```

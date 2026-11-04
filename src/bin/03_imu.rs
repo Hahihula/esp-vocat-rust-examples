@@ -143,7 +143,11 @@ async fn main(_spawner: Spawner) -> ! {
                 info!("--- IMU ---");
                 info!("accel  {:?} g", last.accel);
                 info!("gyro   {:?} °/s", last.gyro);
-                info!("|a|    {:.3} g, tilt {:.1}°", norm(last.accel), motion.tilt_deg());
+                info!(
+                    "|a|    {:.3} g, tilt {:.1}°",
+                    norm(last.accel),
+                    motion.tilt_deg()
+                );
                 match temp {
                     Some(t) => info!("temperature {t:.1} °C (IMU die)"),
                     None => info!("temperature not available yet"),

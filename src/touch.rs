@@ -135,8 +135,10 @@ impl<'d> TouchPads<'d> {
             w.touch_pad7_dac().bits(DAC_SLOPE)
         });
 
-        rtc.touch_scan_ctrl()
-            .modify(|r, w| unsafe { w.touch_scan_pad_map().bits(r.touch_scan_pad_map().bits() | mask) });
+        rtc.touch_scan_ctrl().modify(|r, w| unsafe {
+            w.touch_scan_pad_map()
+                .bits(r.touch_scan_pad_map().bits() | mask)
+        });
         sens_regs.sar_touch_conf().modify(|r, w| unsafe {
             w.sar_touch_outen().bits(r.sar_touch_outen().bits() | mask);
             // Read raw data, not the hardware baseline or smoothed value.
@@ -145,7 +147,8 @@ impl<'d> TouchPads<'d> {
 
         // Start the FSM in timer mode (touch_ll_start_fsm).
         force_timer_done();
-        rtc.touch_ctrl2().modify(|_, w| w.touch_slp_timer_en().set_bit());
+        rtc.touch_ctrl2()
+            .modify(|_, w| w.touch_slp_timer_en().set_bit());
 
         Self {
             _sens: sens,
@@ -210,7 +213,8 @@ impl PadReading {
         if self.baseline == 0 {
             return 0;
         }
-        ((i64::from(self.smooth) - i64::from(self.baseline)) * 1000 / i64::from(self.baseline)) as i32
+        ((i64::from(self.smooth) - i64::from(self.baseline)) * 1000 / i64::from(self.baseline))
+            as i32
     }
 }
 
@@ -353,12 +357,16 @@ impl<'d> TouchInput<'d> {
         let held_recently = g
             .down_at
             .is_some_and(|t| !g.consumed && now - t <= SWIPE_WINDOW);
-        let pending = matches!(self.pending_tap, Some((p, t)) if p == other && now - t <= SWIPE_WINDOW);
+        let pending =
+            matches!(self.pending_tap, Some((p, t)) if p == other && now - t <= SWIPE_WINDOW);
         if held_recently || pending {
             self.pending_tap = None;
             self.gestures[other.index()].consumed = true;
             self.gestures[pad.index()].consumed = true;
-            self.push(TouchEvent::Swipe { from: other, to: pad });
+            self.push(TouchEvent::Swipe {
+                from: other,
+                to: pad,
+            });
         }
     }
 

@@ -197,7 +197,10 @@ async fn scan_i2c(i2c: &mut I2c<'_, Async>) {
         i2c_addr::BMI270,
     ] {
         if found & (1 << addr) == 0 {
-            warn!("  expected {} at 0x{addr:02X} did not answer", device_name(addr));
+            warn!(
+                "  expected {} at 0x{addr:02X} did not answer",
+                device_name(addr)
+            );
         }
     }
 }
@@ -280,7 +283,9 @@ async fn identify_devices(i2c: &mut I2c<'_, Async>) {
             };
             info!("  Touch: chip ID {id:02X} ({name}), firmware {fw:02X}");
         }
-        _ => warn!("  Touch: no answer (it sleeps a few seconds after reset; touch the screen and reset)"),
+        _ => warn!(
+            "  Touch: no answer (it sleeps a few seconds after reset; touch the screen and reset)"
+        ),
     }
 
     identify_fuel_gauge(i2c).await;

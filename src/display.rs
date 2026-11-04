@@ -29,8 +29,7 @@ use embedded_graphics::{
     primitives::{PointsIter, Rectangle},
 };
 use esp_hal::{
-    Async,
-    dma_rx_buffer, dma_tx_buffer,
+    Async, dma_rx_buffer, dma_tx_buffer,
     gpio::{Level, Output, OutputConfig},
     ledc::{
         LSGlobalClkSource, Ledc, LowSpeed,
@@ -240,7 +239,8 @@ impl Lcd {
         };
         let start = usize::from(first) * ROW_BYTES;
         let end = (usize::from(last) + 1) * ROW_BYTES;
-        self.write_window(0, first, WIDTH, &fb.buf[start..end]).await?;
+        self.write_window(0, first, WIDTH, &fb.buf[start..end])
+            .await?;
         Ok(last - first + 1)
     }
 }

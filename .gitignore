@@ -24,3 +24,6 @@ target/
 
 # Ignore .DS_Store file in mac
 **/.DS_Store
+
+# Local Wi-Fi credentials and radio settings
+.cargo/radio.toml

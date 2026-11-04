@@ -133,7 +133,8 @@ impl<'d> LcdReset<'d> {
 
     /// Asserts or releases the reset.
     pub fn set_reset(&mut self, asserted: bool) {
-        self.0.set_level(if asserted { Level::High } else { Level::Low });
+        self.0
+            .set_level(if asserted { Level::High } else { Level::Low });
     }
 }
 

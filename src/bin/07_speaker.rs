@@ -40,11 +40,7 @@ const VOLUME_DB: [i16; 5] = [-30, -20, -12, -6, 0];
 /// Start at -12 dB: the 3 W speaker is loud.
 const START_VOLUME: usize = 2;
 
-const CHIME: &[Note] = &[
-    Note::new(C5, 120),
-    Note::new(E5, 120),
-    Note::new(G5, 300),
-];
+const CHIME: &[Note] = &[Note::new(C5, 120), Note::new(E5, 120), Note::new(G5, 300)];
 
 const SCALE: &[Note] = &[
     Note::new(C4, 250),
@@ -208,7 +204,11 @@ fn volume_of(step: usize) -> Volume {
 async fn play(item: Item) {
     match item {
         Item::Scale => COMMANDS.send(Command::Play(SCALE, Wave::Sine)).await,
-        Item::Melody => COMMANDS.send(Command::Play(ODE_TO_JOY, Wave::Triangle)).await,
+        Item::Melody => {
+            COMMANDS
+                .send(Command::Play(ODE_TO_JOY, Wave::Triangle))
+                .await
+        }
         Item::Sweep => {
             info!("  100 Hz -> 8 kHz in 4 s");
             COMMANDS

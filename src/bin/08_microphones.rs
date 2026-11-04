@@ -21,9 +21,9 @@ extern crate alloc;
 
 use core::fmt::Write;
 
+use core::cell::RefCell;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use core::cell::RefCell;
 
 use embassy_sync::{
     blocking_mutex::{Mutex, raw::CriticalSectionRawMutex},
@@ -122,7 +122,10 @@ async fn main(spawner: Spawner) -> ! {
     if let Err(e) = adc.init(Gain::from_db(GAINS_DB[gain])).await {
         halt("ES7210 init failed", e).await;
     }
-    info!("ES7210 running, gain {} dB", Gain::from_db(GAINS_DB[gain]).db());
+    info!(
+        "ES7210 running, gain {} dB",
+        Gain::from_db(GAINS_DB[gain]).db()
+    );
 
     let mut backlight = Backlight::new(peripherals.LEDC, peripherals.GPIO44);
     let mut reset = LcdReset::new(peripherals.GPIO47);
@@ -135,7 +138,8 @@ async fn main(spawner: Spawner) -> ! {
         cs: peripherals.GPIO14,
         dc: peripherals.GPIO45,
     };
-    let mut lcd = match Lcd::new(peripherals.SPI2, peripherals.DMA_CH0, lcd_pins, &mut reset).await {
+    let mut lcd = match Lcd::new(peripherals.SPI2, peripherals.DMA_CH0, lcd_pins, &mut reset).await
+    {
         Ok(lcd) => lcd,
         Err(e) => halt("LCD init failed", e).await,
     };
@@ -238,18 +242,24 @@ fn draw(
     const MID: i32 = 135;
     const HALF: i32 = 58;
     if !frozen {
-        let _ = Rectangle::new(Point::new(30, MID - HALF - 2), Size::new(300, (HALF * 2 + 5) as u32))
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-            .draw(fb);
+        let _ = Rectangle::new(
+            Point::new(30, MID - HALF - 2),
+            Size::new(300, (HALF * 2 + 5) as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(fb);
         let _ = Line::new(Point::new(30, MID), Point::new(329, MID))
             .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_DIM_GRAY, 1))
             .draw(fb);
         for (ch, color) in [(0, MIC1), (1, MIC2)] {
             let y = |i: usize| MID - i32::from(scope[i][ch]) * HALF / 32768;
             for i in 1..SCOPE {
-                let _ = Line::new(Point::new(29 + i as i32, y(i - 1)), Point::new(30 + i as i32, y(i)))
-                    .into_styled(PrimitiveStyle::with_stroke(color, 1))
-                    .draw(fb);
+                let _ = Line::new(
+                    Point::new(29 + i as i32, y(i - 1)),
+                    Point::new(30 + i as i32, y(i)),
+                )
+                .into_styled(PrimitiveStyle::with_stroke(color, 1))
+                .draw(fb);
             }
         }
     }
@@ -264,8 +274,12 @@ fn draw(
             .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
             .draw(fb);
         let label = if ch == 0 { "1" } else { "2" };
-        let _ = Text::new(label, Point::new(28, y + 18), MonoTextStyle::new(&FONT_10X20, color))
-            .draw(fb);
+        let _ = Text::new(
+            label,
+            Point::new(28, y + 18),
+            MonoTextStyle::new(&FONT_10X20, color),
+        )
+        .draw(fb);
         let _ = Rectangle::new(Point::new(X0, y), Size::new(W as u32, 24))
             .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_DIM_GRAY, 1))
             .draw(fb);
@@ -282,7 +296,11 @@ fn draw(
     }
 
     let mut text = alloc::string::String::with_capacity(24);
-    let _ = write!(text, "gain {gain_db:.1} dB{}", if frozen { "  [frozen]" } else { "" });
+    let _ = write!(
+        text,
+        "gain {gain_db:.1} dB{}",
+        if frozen { "  [frozen]" } else { "" }
+    );
     let _ = Rectangle::new(Point::new(60, 292), Size::new(240, 26))
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
         .draw(fb);

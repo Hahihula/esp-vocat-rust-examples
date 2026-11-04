@@ -103,7 +103,10 @@ async fn main(_spawner: Spawner) -> ! {
         Ok((id, fw)) => info!("touch controller: chip ID {id:02X}, firmware {fw:02X}"),
         Err(e) => halt("touch controller did not answer", e).await,
     }
-    let mut ts_int = Input::new(peripherals.GPIO10, InputConfig::default().with_pull(Pull::Up));
+    let mut ts_int = Input::new(
+        peripherals.GPIO10,
+        InputConfig::default().with_pull(Pull::Up),
+    );
 
     let mut fb = FrameBuffer::new();
     let mut color = 0usize;
@@ -168,7 +171,10 @@ async fn main(_spawner: Spawner) -> ! {
         if report.gesture != last_gesture {
             last_gesture = report.gesture;
             if report.gesture != Gesture::None {
-                info!("gesture {:?} at ({}, {})", report.gesture, report.x, report.y);
+                info!(
+                    "gesture {:?} at ({}, {})",
+                    report.gesture, report.x, report.y
+                );
             }
         }
 

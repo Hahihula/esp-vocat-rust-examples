@@ -284,7 +284,10 @@ fn print_full(s: &Status) {
     let f = s.flags;
     info!("--- fuel gauge ---");
     info!("voltage          {} mV", s.voltage_mv);
-    info!("current          {:+} mA (average {:+} mA)", s.current_ma, s.average_current_ma);
+    info!(
+        "current          {:+} mA (average {:+} mA)",
+        s.current_ma, s.average_current_ma
+    );
     info!("average power    {:+} mW", s.average_power_mw);
     info!("state of charge  {} %", s.state_of_charge_pct);
     info!("state of health  {} %", s.state_of_health_pct);
@@ -303,14 +306,30 @@ fn print_full(s: &Status) {
     info!(
         "flags {:04X}:     {}{}{}{}{}{}{}{}",
         f.0,
-        if f.battery_present() { "present " } else { "NOT-PRESENT " },
+        if f.battery_present() {
+            "present "
+        } else {
+            "NOT-PRESENT "
+        },
         if f.discharging() { "discharging " } else { "" },
         if f.full_charge() { "full " } else { "" },
         if f.fully_discharged() { "empty " } else { "" },
         if f.system_down() { "system-down " } else { "" },
-        if f.charge_inhibit() { "charge-inhibit " } else { "" },
-        if f.over_temp_charge() { "over-temp-charge " } else { "" },
-        if f.over_temp_discharge() { "over-temp-discharge " } else { "" },
+        if f.charge_inhibit() {
+            "charge-inhibit "
+        } else {
+            ""
+        },
+        if f.over_temp_charge() {
+            "over-temp-charge "
+        } else {
+            ""
+        },
+        if f.over_temp_discharge() {
+            "over-temp-discharge "
+        } else {
+            ""
+        },
     );
 }
 

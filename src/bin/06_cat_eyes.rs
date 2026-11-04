@@ -19,8 +19,8 @@
 
 extern crate alloc;
 
-use embassy_executor::Spawner;
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
+use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Delay, Duration, Instant, Ticker, Timer};
@@ -176,7 +176,11 @@ async fn main(_spawner: Spawner) -> ! {
     let mut was_touched = false;
     let mut rng = 0x2545_F491u32;
 
-    let first = imu.read().await.map(|s| s.accel).unwrap_or([0.0, 0.0, -1.0]);
+    let first = imu
+        .read()
+        .await
+        .map(|s| s.accel)
+        .unwrap_or([0.0, 0.0, -1.0]);
     let mut motion = MotionDetector::new(first);
 
     draw_eyes(&mut fb, &pupils, &blink_at, false);
@@ -379,9 +383,13 @@ fn draw_eyes(
 fn draw_face(fb: &mut FrameBuffer) {
     let _ = fb.clear(BACKGROUND);
     let nose = Rgb565::new(31, 32, 18);
-    let _ = Triangle::new(Point::new(166, 248), Point::new(194, 248), Point::new(180, 266))
-        .into_styled(PrimitiveStyle::with_fill(nose))
-        .draw(fb);
+    let _ = Triangle::new(
+        Point::new(166, 248),
+        Point::new(194, 248),
+        Point::new(180, 266),
+    )
+    .into_styled(PrimitiveStyle::with_fill(nose))
+    .draw(fb);
     let mouth = PrimitiveStyle::with_stroke(nose, 3);
     let _ = Line::new(Point::new(180, 266), Point::new(166, 282))
         .into_styled(mouth)

@@ -8,8 +8,8 @@
 //! The TP4057 charger's status pins only drive the charge LED, so the gauge is
 //! the only way to see whether the battery is charging.
 
-use embedded_hal_async::i2c::I2c;
 use embassy_time::{Duration, Timer};
+use embedded_hal_async::i2c::I2c;
 
 use crate::board::i2c_addr;
 

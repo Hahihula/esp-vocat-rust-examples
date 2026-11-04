@@ -10,9 +10,42 @@ esp-hal = { version = "~1.2.2", features = ["esp32s3", "log-04", "unstable"] }
 esp-rtos = { version = "0.4.0", features = [
   "embassy",
   "esp-alloc",
+  "esp-radio",
   "esp32s3",
   "log-04",
 ] }
+esp-radio = { version = "1.0.0-beta.1", features = [
+  "esp-alloc",
+  "esp32s3",
+  "log-04",
+  "unstable",
+  "wifi",
+] }
+embassy-net = { version = "0.9.1", features = [
+  "dhcpv4",
+  "dns",
+  "log",
+  "medium-ethernet",
+  "proto-ipv4",
+  "tcp",
+  "udp",
+] }
+smoltcp = { version = "0.14.0", default-features = false, features = [
+  "log",
+  "medium-ethernet",
+  "multicast",
+  "proto-dhcpv4",
+  "proto-dns",
+  "proto-ipv4",
+  "socket-dns",
+  "socket-raw",
+  "socket-tcp",
+  "socket-udp",
+] }
+embedded-io-async = "0.7.0"
+# MP3 decoder (no_std, allocation-free port of minimp3). Without the default
+# `wide` SIMD feature, which targets x86/ARM.
+nanomp3-core = { version = "0.2.0", default-features = false }
 
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s3", "log-04"] }
 log                    = "0.4.27"
@@ -60,4 +93,7 @@ opt-level = "s"
 codegen-units = 1     # LLVM can perform better optimizations using a single thread
 debug         = 2     # prefer slower builds but better debugging experience
 lto           = 'fat'
-opt-level     = 's'
+# Not "s": at that level the Xtensa LLVM backend fails on the MP3 decoder of
+# demo 09 ("Cannot select: i32 = Constant<4608>").
+opt-level     = 2
+
