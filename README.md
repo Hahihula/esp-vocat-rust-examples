@@ -1,5 +1,13 @@
 # ESP-VoCat Rust examples
 
+<p align="center">
+  <img src="assets/radio_example.jpg" alt="ESP-VoCat showing the clock face of the radio alarm clock demo" width="480">
+</p>
+
+*Demo 09, the [internet radio alarm clock](#09--internet-radio-alarm-clock): the time
+comes from the internet over Wi-Fi, and an internet radio stream wakes you with slowly
+rising volume.*
+
 Bare-metal (`no_std`) Rust demos for the
 [ESP-VoCat v1.2](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp-vocat/user_guide_v1.2.html)
 AI development kit (ESP32-S3, 1.85" round QSPI touch LCD, dual microphones, speaker,
@@ -37,16 +45,6 @@ hold **BOOT**, press **RST**, then release **BOOT** to enter download mode by ha
 
 Log verbosity follows `ESP_LOG` (default `info`), for example
 `ESP_LOG=debug cargo run --release --bin 00_bringup`.
-
-Every demo waits 2 s after boot (`board::wait_for_console()`) before printing. The
-USB-Serial-JTAG console re-enumerates on every reset, and without the wait the first
-lines are lost when the monitor reconnects.
-
-PSRAM runs at 80 MHz (`board::psram()`), twice the esp-hal default. Demo 00 measures
-about 33 MiB/s for both reads and writes, with no errors.
-
-The console only uses USB-Serial-JTAG. UART0 TX (GPIO43) drives the green LED on this
-board, so `esp-println` is built with the `jtag-serial` feature instead of `auto`.
 
 ## Project layout
 
