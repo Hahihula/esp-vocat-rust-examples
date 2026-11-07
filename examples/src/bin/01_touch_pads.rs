@@ -19,7 +19,7 @@ use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use log::info;
-use vocat_rust_examples::{
+use esp_vocat::{
     board::{self, GreenLed},
     touch::{Pad, TouchEvent, TouchInput, TouchPads},
 };

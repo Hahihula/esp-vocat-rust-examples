@@ -27,7 +27,7 @@ use esp_hal::{
 };
 use log::{info, warn};
 use oxstack_drivers::es8311::{Es8311, Mode, Volume};
-use vocat_rust_examples::{
+use esp_vocat::{
     audio::{AudioOut, I2sPins, Note, SAMPLE_RATE, Synth, Wave, pitch::*},
     board::{self, i2c_addr},
     touch::{Pad, TouchEvent, TouchInput, TouchPads},

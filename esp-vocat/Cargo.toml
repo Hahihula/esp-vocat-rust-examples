@@ -1,0 +1,17 @@
+[package]
+name         = "esp-vocat"
+description  = "Board support for the ESP-VoCat v1.2 (ESP32-S3): pins, power, round LCD, touch, microphones, speaker, IMU, fuel gauge"
+edition.workspace      = true
+rust-version.workspace = true
+version.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+esp-hal            = { workspace = true }
+esp-alloc          = { workspace = true }
+esp-println        = { workspace = true }
+embassy-time       = { workspace = true }
+embedded-graphics  = { workspace = true }
+embedded-hal-async = { workspace = true }
+libm               = { workspace = true }
+static_cell        = { workspace = true }

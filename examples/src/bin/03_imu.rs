@@ -24,7 +24,7 @@ use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use log::{info, warn};
 use oxstack_drivers::bmi270::{AccelRange, Bmi270, Config, DataRate, GyroRange, Sample};
-use vocat_rust_examples::{
+use esp_vocat::{
     board::{self, GreenLed, i2c_addr},
     motion::{MotionDetector, MotionEvent, norm},
     touch::{Pad, TouchEvent, TouchInput, TouchPads},

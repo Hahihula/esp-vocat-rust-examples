@@ -1,0 +1,34 @@
+[package]
+name         = "esp-vocat-examples"
+description  = "Demos for the ESP-VoCat v1.2, built on the esp-vocat library"
+edition.workspace      = true
+rust-version.workspace = true
+version.workspace      = true
+repository.workspace   = true
+publish      = false
+
+[dependencies]
+esp-vocat              = { workspace = true }
+esp-hal                = { workspace = true }
+esp-rtos               = { workspace = true }
+esp-radio              = { workspace = true }
+esp-bootloader-esp-idf = { workspace = true }
+esp-alloc              = { workspace = true }
+esp-backtrace          = { workspace = true }
+esp-println            = { workspace = true }
+embassy-net            = { workspace = true }
+smoltcp                = { workspace = true }
+embedded-io-async      = { workspace = true }
+nanomp3-core           = { workspace = true }
+log                    = { workspace = true }
+embassy-executor       = { workspace = true }
+embassy-time           = { workspace = true }
+embassy-futures        = { workspace = true }
+embassy-sync           = { workspace = true }
+embassy-embedded-hal   = { workspace = true }
+embedded-hal-async     = { workspace = true }
+libm                   = { workspace = true }
+embedded-graphics      = { workspace = true }
+oxstack-drivers        = { workspace = true }
+critical-section       = { workspace = true }
+static_cell            = { workspace = true }

@@ -25,7 +25,7 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::{Async, i2c::master::I2c, timer::timg::TimerGroup};
 use log::{info, warn};
-use vocat_rust_examples::{
+use esp_vocat::{
     battery::{Bq27220, DEVICE_NUMBER, Status},
     board::{self, GreenLed},
     touch::{Pad, TouchEvent, TouchInput, TouchPads},

@@ -32,7 +32,7 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use log::{info, warn};
-use vocat_rust_examples::{
+use esp_vocat::{
     board::{self, LcdReset},
     display::{Backlight, FrameBuffer, Lcd, LcdPins, WIDTH},
     touch::{Pad, TouchEvent, TouchInput, TouchPads},

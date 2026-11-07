@@ -41,7 +41,7 @@ use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use libm::{log10f, sqrtf};
 use log::{info, warn};
-use vocat_rust_examples::{
+use esp_vocat::{
     audio::{AudioIn, I2sInPins},
     board::{self, GreenLed, LcdReset},
     display::{Backlight, FrameBuffer, Lcd, LcdPins},

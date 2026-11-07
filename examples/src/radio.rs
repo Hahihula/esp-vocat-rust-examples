@@ -26,7 +26,7 @@ use log::{info, warn};
 use nanomp3_core::{Channels, DecodeError, Decoder, MAX_SAMPLES_PER_FRAME};
 use static_cell::ConstStaticCell;
 
-use crate::audio::SAMPLE_RATE;
+use esp_vocat::audio::SAMPLE_RATE;
 
 /// Default stream: SomaFM Groove Salad, 128 kbit/s MP3, 44.1 kHz.
 pub const DEFAULT_URL: &str = "http://ice1.somafm.com/groovesalad-128-mp3";

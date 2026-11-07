@@ -14,7 +14,7 @@ AI development kit (ESP32-S3, 1.85" round QSPI touch LCD, dual microphones, spea
 IMU, fuel gauge, microSD), built on [esp-hal](https://github.com/esp-rs/esp-hal) and
 Embassy.
 
-The pin map in `src/board.rs` follows the
+The pin map in `esp-vocat/src/board.rs` follows the
 [v1.2 schematic](https://dl.espressif.com/AE/esp-dev-kits/ESP-VoCat_SCH_V1_2.pdf), which
 matches Espressif's C BSP (`esp-bsp/bsp/esp_vocat`). ESP-VoCat v1.0 uses other pins for
 UART1, I2S DI, the PA enable and the LCD reset, has one touch pad instead of two and no
@@ -33,7 +33,7 @@ flash.
 
 ## Running a demo
 
-Every demo is its own binary in `src/bin/`:
+Every demo is its own binary in `examples/src/bin/`. From the repository root:
 
 ```bash
 cargo run --release --bin 00_bringup
@@ -48,21 +48,43 @@ Log verbosity follows `ESP_LOG` (default `info`), for example
 
 ## Project layout
 
+The repository is a Cargo workspace with two crates:
+
+- **`esp-vocat`**: the board library. Pin map, power switches and drivers for the
+  hardware on the board. Use it in your own firmware (see below).
+- **`esp-vocat-examples`** (`examples/`): the demos, plus the app-level helpers
+  (Wi-Fi, internet radio, local clock) that only the demos need, so a firmware using
+  the board doesn't pull in the network stack or the MP3 decoder.
+
 | Path | Contents |
 |------|----------|
-| `src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
-| `src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers; output restarts itself after running dry), and a small synthesiser |
-| `src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
-| `src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
-| `src/es7210.rs` | ES7210 microphone ADC driver, ported from Espressif's `esp_codec_dev` |
-| `src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
-| `src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |
-| `src/touchscreen.rs` | CST816T touch controller driver (position, controller gestures) |
-| `src/touch.rs` | Register-level driver for the two touch pads, baseline tracking and tap/long/swipe decoding |
-| `src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP client |
-| `src/clock.rs` | Local time from Unix time: fixed UTC offset plus EU summer time, weekday |
-| `src/radio.rs` | Internet radio: HTTP stream download, MP3 decoding (`nanomp3-core`), resampling and volume ramp |
-| `src/bin/NN_*.rs` | The demos |
+| `esp-vocat/src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
+| `esp-vocat/src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers; output restarts itself after running dry), and a small synthesiser |
+| `esp-vocat/src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
+| `esp-vocat/src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
+| `esp-vocat/src/es7210.rs` | ES7210 microphone ADC driver, ported from Espressif's `esp_codec_dev` |
+| `esp-vocat/src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
+| `esp-vocat/src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |
+| `esp-vocat/src/touchscreen.rs` | CST816T touch controller driver (position, controller gestures) |
+| `esp-vocat/src/touch.rs` | Register-level driver for the two touch pads, baseline tracking and tap/long/swipe decoding |
+| `examples/src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP client |
+| `examples/src/clock.rs` | Local time from Unix time: fixed UTC offset plus EU summer time, weekday |
+| `examples/src/radio.rs` | Internet radio: HTTP stream download, MP3 decoding (`nanomp3-core`), resampling and volume ramp |
+| `examples/src/bin/NN_*.rs` | The demos |
+
+## Using `esp-vocat` in your own firmware
+
+The library isn't on crates.io; depend on it by git tag:
+
+```toml
+[dependencies]
+esp-vocat = { git = "https://github.com/Hahihula/esp-vocat-rust-examples", tag = "v0.1.0" }
+```
+
+Use the same esp-hal version as this workspace (see `[workspace.dependencies]` in the root
+`Cargo.toml`), and copy `.cargo/config.toml`, `rust-toolchain.toml` and the demos'
+`build.rs` (linker scripts) into your firmware. Cargo pins the exact tag, so moving to a
+newer release means changing the tag.
 
 ## Demos
 
@@ -150,7 +172,7 @@ power button, so the demos use the two capacitive touch pads as input: TOUCH_PAD
 (GPIO6) at the back of the cat's head and TOUCH_PAD2 (GPIO7) at the front. A swipe
 goes from back to front or from front to back.
 
-esp-hal has no touch sensor driver for the ESP32-S3. `src/touch.rs` programs the touch
+esp-hal has no touch sensor driver for the ESP32-S3. `esp-vocat/src/touch.rs` programs the touch
 FSM directly, following ESP-IDF's `touch_ll`: timer mode, 500 measurement cycles per
 channel, charge between 0.5 V and 2.7 V, both channels scanned continuously. The CPU
 only reads the raw counts.
@@ -291,7 +313,7 @@ configuration. The demo uses the async BMI270 driver from
 210 ms at 400 kHz. The driver only polls; the INT1 line (GPIO21) is not used yet.
 
 The demo runs the sensor at ±4 g, ±1000 °/s and 200 Hz, reads it every 5 ms and feeds the
-samples into `MotionDetector` (`src/motion.rs`):
+samples into `MotionDetector` (`esp-vocat/src/motion.rs`):
 
 | Event | Rule |
 |-------|------|
@@ -354,7 +376,7 @@ cargo run --release --bin 04_display
 
 The 1.85" 360×360 round panel has an ST77916 controller on QSPI (CLK GPIO18, D0–D3
 GPIO46/13/11/12, CS GPIO14, DC GPIO45, reset GPIO47, backlight GPIO44). No Rust crate
-supports it, so `src/display.rs` implements the protocol of Espressif's
+supports it, so `esp-vocat/src/display.rs` implements the protocol of Espressif's
 `esp_lcd_st77916` driver. While CS is low:
 
 1. A 32-bit header goes out on one data line with DC low: `02 00 cmd 00` for a command,
@@ -554,7 +576,7 @@ cargo run --release --bin 08_microphones
 Records both microphones through the ES7210 (I2C 0x40) and shows them on the LCD. The
 ES7210 runs as I2S slave: the ESP32-S3 provides MCLK (256 × fs = 4.096 MHz), BCLK and WS,
 and receives 16 kHz, 16-bit stereo on DIN (GPIO3). Left is MIC1, right is MIC2.
-`src/es7210.rs` is a port of the init sequence of Espressif's `esp_codec_dev` driver.
+`esp-vocat/src/es7210.rs` is a port of the init sequence of Espressif's `esp_codec_dev` driver.
 Only SDOUT1 of the ES7210 is wired, so in plain I2S mode only MIC1 and MIC2 are
 available. MIC3, the speaker loopback for echo cancellation, would need TDM mode.
 

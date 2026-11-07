@@ -34,7 +34,7 @@ use esp_hal::timer::timg::TimerGroup;
 use libm::{cosf, sinf, sqrtf};
 use log::{info, warn};
 use oxstack_drivers::bmi270::{AccelRange, Bmi270, Config, DataRate, GyroRange};
-use vocat_rust_examples::{
+use esp_vocat::{
     board::{self, LcdReset, i2c_addr},
     display::{Backlight, FrameBuffer, Lcd, LcdPins},
     motion::{MotionDetector, MotionEvent},

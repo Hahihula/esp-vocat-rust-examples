@@ -59,13 +59,15 @@ use esp_hal::{
 };
 use log::{info, warn};
 use oxstack_drivers::es8311::{Es8311, Mode, Volume};
-use vocat_rust_examples::{
-    audio::{AudioOut, Error, I2sPins, Note, Synth, Wave},
-    board::{self, LcdReset, i2c_addr},
+use esp_vocat_examples::{
     clock::{Clock, LocalTime},
-    display::{Backlight, FrameBuffer, Lcd, LcdPins},
     net,
     radio::{self, Player, Stats},
+};
+use esp_vocat::{
+    audio::{AudioOut, Error, I2sPins, Note, Synth, Wave},
+    board::{self, LcdReset, i2c_addr},
+    display::{Backlight, FrameBuffer, Lcd, LcdPins},
     touch::{Pad, TouchEvent, TouchInput, TouchPads},
     touchscreen::Cst816,
 };

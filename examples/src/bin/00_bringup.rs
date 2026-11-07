@@ -27,7 +27,7 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use log::{info, warn};
-use vocat_rust_examples::board::{self, GreenLed, LcdReset, i2c_addr};
+use esp_vocat::board::{self, GreenLed, LcdReset, i2c_addr};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 

@@ -36,7 +36,7 @@ use embedded_graphics::{
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use log::{info, warn};
-use vocat_rust_examples::{
+use esp_vocat::{
     board::{self, LcdReset},
     display::{Backlight, FRAME_BYTES, FrameBuffer, HEIGHT, Lcd, LcdPins, SPI_CLOCK, WIDTH},
     touch::{Pad, TouchEvent, TouchInput, TouchPads},
