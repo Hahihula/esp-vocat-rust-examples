@@ -24,10 +24,9 @@ use esp_hal::{
     efuse::{self, InterfaceMacAddress},
     i2c::master::{AcknowledgeCheckFailedReason, Error as I2cError, I2c},
     psram::Psram,
-    timer::timg::TimerGroup,
 };
-use log::{info, warn};
 use esp_vocat::board::{self, GreenLed, LcdReset, i2c_addr};
+use log::{info, warn};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -37,16 +36,11 @@ esp_bootloader_esp_idf::esp_app_desc!();
 )]
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
-    let peripherals = board::init();
-
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
+    esp_vocat_examples::start!(peripherals, "ESP-VoCat bring-up");
 
     let mut led = GreenLed::new(peripherals.GPIO43);
     led.set(true);
 
-    info!("=== ESP-VoCat bring-up ===");
     print_chip_info();
 
     let psram = board::psram(peripherals.PSRAM);

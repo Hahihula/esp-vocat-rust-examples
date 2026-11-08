@@ -34,13 +34,15 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use log::{info, warn};
 use esp_vocat::{
     board::{self, LcdReset},
-    display::{Backlight, FRAME_BYTES, FrameBuffer, HEIGHT, Lcd, LcdPins, SPI_CLOCK, WIDTH},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
+    display::{Backlight, FRAME_BYTES, FrameBuffer, HEIGHT, Lcd, SPI_CLOCK, WIDTH},
+    lcd_pins,
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
 };
+use esp_vocat_examples::demo::{self, flush};
+use log::{info, warn};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -72,13 +74,8 @@ impl Screen {
 )]
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
-    let peripherals = board::init();
+    esp_vocat_examples::start!(peripherals, "Demo 04: round LCD 360x360 (ST77916, QSPI)");
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 04: round LCD 360x360 (ST77916, QSPI) ===");
     info!("front tap = next screen, back tap = brightness");
 
     let psram = board::psram_heap(peripherals.PSRAM);
@@ -89,24 +86,8 @@ async fn main(_spawner: Spawner) -> ! {
     let mut backlight = Backlight::new(peripherals.LEDC, peripherals.GPIO44);
     let mut reset = LcdReset::new(peripherals.GPIO47);
 
-    let pins = LcdPins {
-        clk: peripherals.GPIO18,
-        d0: peripherals.GPIO46,
-        d1: peripherals.GPIO13,
-        d2: peripherals.GPIO11,
-        d3: peripherals.GPIO12,
-        cs: peripherals.GPIO14,
-        dc: peripherals.GPIO45,
-    };
-    let mut lcd = match Lcd::new(peripherals.SPI2, peripherals.DMA_CH0, pins, &mut reset).await {
-        Ok(lcd) => lcd,
-        Err(e) => {
-            warn!("LCD init failed: {e:?}");
-            loop {
-                Timer::after(Duration::from_secs(1)).await;
-            }
-        }
-    };
+    let pins = lcd_pins!(peripherals);
+    let mut lcd = demo::lcd(peripherals.SPI2, peripherals.DMA_CH0, pins, &mut reset).await;
     info!("LCD initialised, SPI clock {} MHz", SPI_CLOCK.as_mhz());
 
     let mut fb = FrameBuffer::new();
@@ -126,12 +107,7 @@ async fn main(_spawner: Spawner) -> ! {
     let mut brightness = 0;
     backlight.fade(0, BRIGHTNESS[brightness], Duration::from_millis(500));
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut touch = TouchInput::new(pads).await;
 
     let mut screen = Screen::TestPattern;
@@ -164,7 +140,7 @@ async fn main(_spawner: Spawner) -> ! {
     clippy::large_stack_frames,
     reason = "async LCD transfers; one screen future at a time"
 )]
-async fn run_screen(screen: Screen, lcd: &mut Lcd, fb: &mut FrameBuffer) {
+async fn run_screen(screen: Screen, lcd: &mut Lcd<'_>, fb: &mut FrameBuffer) {
     match screen {
         Screen::TestPattern => {
             draw_test_pattern(fb);
@@ -190,13 +166,6 @@ async fn run_screen(screen: Screen, lcd: &mut Lcd, fb: &mut FrameBuffer) {
         }
         Screen::Ball => bouncing_ball(lcd, fb).await,
         Screen::Benchmark => benchmark(lcd, fb).await,
-    }
-}
-
-#[allow(clippy::large_stack_frames, reason = "async LCD transfers")]
-async fn flush(lcd: &mut Lcd, fb: &mut FrameBuffer) {
-    if let Err(e) = lcd.flush(fb).await {
-        warn!("flush failed: {e:?}");
     }
 }
 
@@ -264,7 +233,7 @@ fn draw_test_pattern(fb: &mut FrameBuffer) {
     clippy::large_stack_frames,
     reason = "async LCD transfers; one screen future at a time"
 )]
-async fn bouncing_ball(lcd: &mut Lcd, fb: &mut FrameBuffer) {
+async fn bouncing_ball(lcd: &mut Lcd<'_>, fb: &mut FrameBuffer) {
     const R: f32 = 22.0;
     // The ball bounces off a circle just inside the round panel edge.
     const BOUND: f32 = WIDTH as f32 / 2.0 - 3.0 - R;
@@ -341,7 +310,7 @@ async fn bouncing_ball(lcd: &mut Lcd, fb: &mut FrameBuffer) {
     clippy::large_stack_frames,
     reason = "async LCD transfers; one screen future at a time"
 )]
-async fn benchmark(lcd: &mut Lcd, fb: &mut FrameBuffer) {
+async fn benchmark(lcd: &mut Lcd<'_>, fb: &mut FrameBuffer) {
     let mut phase = 0u8;
     let mut frames = 0u32;
     let mut draw_us = 0u64;

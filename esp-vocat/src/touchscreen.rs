@@ -20,7 +20,9 @@
 //! | 0xFA | interrupt control |
 //! | 0xFE | auto-sleep disable |
 
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embedded_hal_async::i2c::I2c;
+use esp_hal::gpio::Input;
 
 use crate::board::i2c_addr;
 
@@ -40,6 +42,7 @@ const MOTION_DOUBLE_CLICK: u8 = 0x01;
 
 /// A gesture recognised by the controller itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(missing_docs, reason = "the names are the controller's gesture names")]
 pub enum Gesture {
     None,
     SwipeUp,
@@ -71,13 +74,71 @@ impl From<u8> for Gesture {
 /// One touch report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Report {
+    /// Gesture from register 0x01; it keeps its value until the next touch.
     pub gesture: Gesture,
     /// Whether a finger is on the screen.
     pub touched: bool,
     /// Event code from bits 7:6 of register 0x03 (0 down, 1 up, 2 contact).
     pub event: u8,
+    /// X in pixels (0..360).
     pub x: u16,
+    /// Y in pixels (0..360).
     pub y: u16,
+}
+
+/// Latches the controller's INT pulses (GPIO10, falling edge), so none are
+/// lost while the application is busy drawing.
+///
+/// Waiting on the pin directly inside a `select` loses pulses: dropping
+/// esp-hal's edge future disarms the pin, so it is deaf until the next
+/// wait. [`IrqLatch::watch`] keeps one wait armed for the whole program
+/// instead, and [`IrqLatch::wait`] only consumes the latched pulse, which is
+/// safe to cancel.
+///
+/// ```ignore
+/// static TOUCH_IRQ: IrqLatch = IrqLatch::new();
+///
+/// #[embassy_executor::task]
+/// async fn touch_irq(pin: Input<'static>) -> ! {
+///     TOUCH_IRQ.watch(pin).await
+/// }
+/// // ... and in the main loop:
+/// select(TOUCH_IRQ.wait(), other_event).await;
+/// ```
+pub struct IrqLatch(Signal<CriticalSectionRawMutex, ()>);
+
+impl IrqLatch {
+    /// A latch with no pulse pending.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Signal::new())
+    }
+
+    /// Waits for INT pulses forever and latches each one. Run this in its
+    /// own task (or a future that is never dropped).
+    pub async fn watch(&self, mut pin: Input<'_>) -> ! {
+        loop {
+            pin.wait_for_falling_edge().await;
+            self.0.signal(());
+        }
+    }
+
+    /// Waits until a pulse has been latched and consumes it. Returns at once
+    /// if one came in since the last call.
+    pub async fn wait(&self) {
+        self.0.wait().await;
+    }
+
+    /// Consumes a latched pulse without waiting; `true` if there was one.
+    pub fn take(&self) -> bool {
+        self.0.try_take().is_some()
+    }
+}
+
+impl Default for IrqLatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// CST816T driver over any async I2C bus.
@@ -86,6 +147,7 @@ pub struct Cst816<I> {
 }
 
 impl<I: I2c> Cst816<I> {
+    /// A driver on `i2c`; call [`Cst816::init`] next.
     pub fn new(i2c: I) -> Self {
         Self { i2c }
     }
@@ -104,6 +166,10 @@ impl<I: I2c> Cst816<I> {
 
     /// Disables auto-sleep and enables interrupts on touch and movement.
     /// Returns the chip ID and firmware version.
+    ///
+    /// # Errors
+    ///
+    /// If the controller doesn't answer (it sleeps a few seconds after reset).
     pub async fn init(&mut self) -> Result<(u8, u8), I::Error> {
         let id = self.read_u8(reg::CHIP_ID).await?;
         let fw = self.read_u8(reg::FW_VERSION).await?;
@@ -114,6 +180,10 @@ impl<I: I2c> Cst816<I> {
     }
 
     /// Reads the current touch state and gesture.
+    ///
+    /// # Errors
+    ///
+    /// If the I2C transfer fails.
     pub async fn read(&mut self) -> Result<Report, I::Error> {
         let mut b = [0u8; 6];
         self.i2c

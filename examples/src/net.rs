@@ -1,7 +1,8 @@
 //! Wi-Fi station plus embassy-net stack, shared by the network demos.
 //!
 //! Credentials are read at build time from the `WIFI_SSID` and `WIFI_PASSWORD`
-//! environment variables (`.cargo/radio.toml`, see `.cargo/radio.toml.example`).
+//! environment variables:
+//! `WIFI_SSID=... WIFI_PASSWORD=... cargo run --release --bin 09_radio_alarm`.
 //! An empty or missing password selects an open network.
 //!
 //! Ported from the ESP32-S31-Korvo-1 examples; [`DateTime`] and the SNTP
@@ -193,50 +194,4 @@ pub async fn ntp_time(stack: Stack<'_>, server: &str) -> Result<u64, NtpError> {
         .ok_or(NtpError::BadReply)
 }
 
-/// Calendar date and time (UTC, or local time from [`crate::clock`]).
-#[derive(Debug, Clone, Copy)]
-pub struct DateTime {
-    pub year: i32,
-    pub month: u8,
-    pub day: u8,
-    pub hour: u8,
-    pub minute: u8,
-    pub second: u8,
-}
-
-impl DateTime {
-    /// Converts Unix seconds to a date (Howard Hinnant's `civil_from_days`).
-    pub fn from_unix(unix: u64) -> Self {
-        let days = (unix / 86_400) as i64;
-        let secs = unix % 86_400;
-
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z.rem_euclid(146_097);
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let day = (doy - (153 * mp + 2) / 5 + 1) as u8;
-        let month = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
-        let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
-
-        Self {
-            year,
-            month,
-            day,
-            hour: (secs / 3600) as u8,
-            minute: (secs / 60 % 60) as u8,
-            second: (secs % 60) as u8,
-        }
-    }
-}
-
-impl core::fmt::Display for DateTime {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            self.year, self.month, self.day, self.hour, self.minute, self.second
-        )
-    }
-}
+pub use crate::time::DateTime;

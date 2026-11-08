@@ -40,33 +40,69 @@ const FRAME_BYTES: usize = 4;
 /// Size of the DMA ring buffer: about 46 ms of audio.
 const RING_BYTES: usize = 8192;
 
-/// The I2S pins.
-pub struct I2sPins {
-    pub mclk: GPIO42<'static>,
-    pub bclk: GPIO40<'static>,
-    pub ws: GPIO39<'static>,
-    pub dout: GPIO41<'static>,
+/// The I2S pins for playback. [`i2s_out_pins!`](crate::i2s_out_pins) fills
+/// it in from the peripherals.
+#[allow(missing_docs, reason = "the field names are the signal names")]
+pub struct I2sPins<'d> {
+    pub mclk: GPIO42<'d>,
+    pub bclk: GPIO40<'d>,
+    pub ws: GPIO39<'d>,
+    pub dout: GPIO41<'d>,
 }
 
-/// Errors from the audio output.
+/// The [`I2sPins`] taken out of `esp_hal::peripherals::Peripherals`.
+#[macro_export]
+macro_rules! i2s_out_pins {
+    ($p:expr) => {
+        $crate::audio::I2sPins {
+            mclk: $p.GPIO42,
+            bclk: $p.GPIO40,
+            ws: $p.GPIO39,
+            dout: $p.GPIO41,
+        }
+    };
+}
+
+/// The [`I2sInPins`] taken out of `esp_hal::peripherals::Peripherals`.
+#[macro_export]
+macro_rules! i2s_in_pins {
+    ($p:expr) => {
+        $crate::audio::I2sInPins {
+            mclk: $p.GPIO42,
+            bclk: $p.GPIO40,
+            ws: $p.GPIO39,
+            din: $p.GPIO3,
+        }
+    };
+}
+
+/// Errors from the audio streams.
 #[derive(Debug)]
 pub enum Error {
+    /// The I2S configuration was rejected.
     Config(esp_hal::i2s::master::ConfigError),
+    /// Starting a transfer failed.
     I2s(I2sError),
+    /// The DMA stopped (ring ran dry or overflowed). The stream has been
+    /// restarted; the next call works again.
     Dma(esp_hal::dma::DmaError),
-    /// Restarting after a DMA error failed; the output is gone.
+    /// Restarting after a DMA error failed; the stream is gone.
     Stopped,
 }
 
 /// A running I2S output stream.
-pub struct AudioOut {
+pub struct AudioOut<'d> {
     /// `None` only if restarting after an error failed.
-    transfer: Option<I2sTxDmaTransfer<'static, Async, DmaTxStreamBuf>>,
+    transfer: Option<I2sTxDmaTransfer<'d, Async, DmaTxStreamBuf>>,
 }
 
-impl AudioOut {
+impl<'d> AudioOut<'d> {
     /// Starts the I2S clocks and a stream of silence.
-    pub fn new(i2s: I2S0<'static>, dma: DMA_CH1<'static>, pins: I2sPins) -> Result<Self, Error> {
+    ///
+    /// # Errors
+    ///
+    /// If the I2S configuration is rejected or the transfer can't start.
+    pub fn new(i2s: I2S0<'d>, dma: DMA_CH1<'d>, pins: I2sPins<'d>) -> Result<Self, Error> {
         let config = TdmConfig::new_tdm_philips()
             .with_sample_rate(Rate::from_hz(SAMPLE_RATE))
             .with_data_format(DataFormat::Data16Channel16)
@@ -100,6 +136,10 @@ impl AudioOut {
     /// DMA stops with a descriptor error. The stream is then restarted (the
     /// error is still returned, so the caller can log it); the ring replays
     /// its old contents once.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Dma`] after a restart, [`Error::Stopped`] if restarting failed.
     pub async fn fill(&mut self, mut render: impl FnMut(&mut [i16])) -> Result<(), Error> {
         let transfer = self.transfer.as_mut().ok_or(Error::Stopped)?;
         if let Err(e) = transfer.wait_for_available_async().await {
@@ -131,13 +171,15 @@ impl AudioOut {
     }
 }
 
-/// The I2S pins for recording.
-pub struct I2sInPins {
-    pub mclk: GPIO42<'static>,
-    pub bclk: GPIO40<'static>,
-    pub ws: GPIO39<'static>,
+/// The I2S pins for recording. [`i2s_in_pins!`](crate::i2s_in_pins) fills
+/// it in from the peripherals.
+#[allow(missing_docs, reason = "the field names are the signal names")]
+pub struct I2sInPins<'d> {
+    pub mclk: GPIO42<'d>,
+    pub bclk: GPIO40<'d>,
+    pub ws: GPIO39<'d>,
     /// SDOUT1 of the ES7210.
-    pub din: GPIO3<'static>,
+    pub din: GPIO3<'d>,
 }
 
 /// Size of the DMA ring buffer for recording.
@@ -145,20 +187,25 @@ const IN_RING_BYTES: usize = 8192;
 
 /// A running I2S input stream: 16-bit stereo frames from the ES7210 (left =
 /// MIC1, right = MIC2).
-pub struct AudioIn {
-    transfer: I2sRxDmaTransfer<'static, Async, DmaRxStreamBuf>,
+pub struct AudioIn<'d> {
+    /// `None` only if restarting after an error failed.
+    transfer: Option<I2sRxDmaTransfer<'d, Async, DmaRxStreamBuf>>,
     /// Bytes of a frame that was split between two DMA descriptors.
     partial: [u8; FRAME_BYTES],
     partial_len: usize,
 }
 
-impl AudioIn {
+impl<'d> AudioIn<'d> {
     /// Starts the I2S clocks (MCLK = 256 × fs) and the receive stream. The
     /// ES7210 can be initialised once this is running.
+    ///
+    /// # Errors
+    ///
+    /// If the I2S configuration is rejected or the transfer can't start.
     pub fn new(
-        i2s: I2S0<'static>,
-        dma: DMA_CH1<'static>,
-        pins: I2sInPins,
+        i2s: I2S0<'d>,
+        dma: DMA_CH1<'d>,
+        pins: I2sInPins<'d>,
         sample_rate: u32,
     ) -> Result<Self, Error> {
         let config = TdmConfig::new_tdm_philips()
@@ -178,7 +225,7 @@ impl AudioIn {
         let buf = dma_rx_stream_buffer!(IN_RING_BYTES, 1024);
         let transfer = rx.read(buf).map_err(|(e, _, _)| Error::I2s(e))?;
         Ok(Self {
-            transfer,
+            transfer: Some(transfer),
             partial: [0; FRAME_BYTES],
             partial_len: 0,
         })
@@ -187,11 +234,20 @@ impl AudioIn {
     /// Waits for recorded data and passes each frame (left, right) to
     /// `frame`. Has to be called often enough that the ring (about 128 ms at
     /// 16 kHz) never fills up.
+    ///
+    /// # Errors
+    ///
+    /// If the ring overflowed, the DMA stops with an error. The stream is
+    /// then restarted and [`Error::Dma`] returned, so the caller can log
+    /// the gap; the next call records again. [`Error::Stopped`] if
+    /// restarting failed.
     pub async fn read(&mut self, mut frame: impl FnMut(i16, i16)) -> Result<usize, Error> {
-        self.transfer
-            .wait_for_available_async()
-            .await
-            .map_err(Error::Dma)?;
+        let transfer = self.transfer.as_mut().ok_or(Error::Stopped)?;
+        if let Err(e) = transfer.wait_for_available_async().await {
+            self.restart()?;
+            return Err(Error::Dma(e));
+        }
+        let transfer = self.transfer.as_mut().ok_or(Error::Stopped)?;
         let mut frames = 0;
         let emit = |f: &[u8], frame: &mut dyn FnMut(i16, i16)| {
             frame(
@@ -200,7 +256,7 @@ impl AudioIn {
             );
         };
         loop {
-            let data = self.transfer.peek();
+            let data = transfer.peek();
             if data.is_empty() {
                 break;
             }
@@ -229,9 +285,20 @@ impl AudioIn {
             self.partial[self.partial_len..self.partial_len + tail.len()].copy_from_slice(tail);
             self.partial_len += tail.len();
             // Always consume everything, or the ring stops draining.
-            self.transfer.consume(len);
+            transfer.consume(len);
         }
         Ok(frames)
+    }
+
+    /// Stops the dead transfer and starts a new one on the same ring. A
+    /// frame split across the gap is dropped.
+    fn restart(&mut self) -> Result<(), Error> {
+        let transfer = self.transfer.take().ok_or(Error::Stopped)?;
+        let (rx, buf) = transfer.stop();
+        self.partial_len = 0;
+        let transfer = rx.read(buf).map_err(|(e, _, _)| Error::I2s(e))?;
+        self.transfer = Some(transfer);
+        Ok(())
     }
 }
 

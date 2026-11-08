@@ -53,22 +53,32 @@ The repository is a Cargo workspace with two crates:
 - **`esp-vocat`**: the board library. Pin map, power switches and drivers for the
   hardware on the board. Use it in your own firmware (see below).
 - **`esp-vocat-examples`** (`examples/`): the demos, plus the app-level helpers
-  (Wi-Fi, internet radio, local clock) that only the demos need, so a firmware using
-  the board doesn't pull in the network stack or the MP3 decoder.
+  (start-up, Wi-Fi, internet radio, local clock) that only the demos need, so a
+  firmware using the board doesn't pull in the network stack or the MP3 decoder.
+
+In both, the hardware-independent modules (touch-pad gestures, motion detection, gain
+steps, dates, URLs) touch no peripheral and read no clock (time is passed in). They
+also build for a PC, where they are unit-tested; everything else builds only for the
+ESP32-S3.
 
 | Path | Contents |
 |------|----------|
-| `esp-vocat/src/board.rs` | Board pin map, I2C device addresses, common `init()`, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
-| `esp-vocat/src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers; output restarts itself after running dry), and a small synthesiser |
+| `esp-vocat/src/board.rs` | Board pin map, I2C device addresses, `init()`, logger, PSRAM heap, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
+| `esp-vocat/src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers; both restart themselves after a DMA error), and a small synthesiser |
 | `esp-vocat/src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
-| `esp-vocat/src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples |
 | `esp-vocat/src/es7210.rs` | ES7210 microphone ADC driver, ported from Espressif's `esp_codec_dev` |
 | `esp-vocat/src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
 | `esp-vocat/src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |
-| `esp-vocat/src/touchscreen.rs` | CST816T touch controller driver (position, controller gestures) |
-| `esp-vocat/src/touch.rs` | Register-level driver for the two touch pads, baseline tracking and tap/long/swipe decoding |
+| `esp-vocat/src/touchscreen.rs` | CST816T touch controller driver (position, controller gestures) and an INT latch that loses no pulses |
+| `esp-vocat/src/touch.rs` | Register-level driver for the two touch pads |
+| `esp-vocat/src/gesture.rs` | Touch-pad baseline tracking and tap/long/swipe decoding (host-tested) |
+| `esp-vocat/src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples (host-tested) |
+| `esp-vocat/src/gain.rs` | ES7210 gain steps (host-tested) |
+| `examples/src/demo.rs` | Start-up macro, LCD bring-up, flush and halt helpers, speaker volume steps |
 | `examples/src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP client |
-| `examples/src/clock.rs` | Local time from Unix time: fixed UTC offset plus EU summer time, weekday |
+| `examples/src/time.rs` | Dates from Unix time, EU summer time, local time, a clock kept from one time sync (host-tested) |
+| `examples/src/url.rs` | `http://` URL parsing (host-tested) |
+| `examples/src/clock.rs` | Build-time time zone on top of `time` |
 | `examples/src/radio.rs` | Internet radio: HTTP stream download, MP3 decoding (`nanomp3-core`), resampling and volume ramp |
 | `examples/src/bin/NN_*.rs` | The demos |
 
@@ -78,13 +88,45 @@ The library isn't on crates.io; depend on it by git tag:
 
 ```toml
 [dependencies]
-esp-vocat = { git = "https://github.com/Hahihula/esp-vocat-rust-examples", tag = "v0.1.0" }
+esp-vocat = { git = "https://github.com/Hahihula/esp-vocat-rust-examples", tag = "v0.1.0", features = ["log"] }
 ```
 
-Use the same esp-hal version as this workspace (see `[workspace.dependencies]` in the root
-`Cargo.toml`), and copy `.cargo/config.toml`, `rust-toolchain.toml` and the demos'
-`build.rs` (linker scripts) into your firmware. Cargo pins the exact tag, so moving to a
-newer release means changing the tag.
+```rust
+let p = esp_vocat::board::init();          // HAL at 240 MHz
+esp_vocat::board::init_logger();           // `log` feature: esp-println on USB-Serial-JTAG
+// The heap is yours to size: the RAM the bootloader used, more internal RAM if you
+// need it (Wi-Fi wants ~60 KiB more), then PSRAM.
+esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: esp_vocat::board::RECLAIMED_HEAP);
+esp_vocat::board::psram_heap(p.PSRAM);
+let lcd = Lcd::new(p.SPI2, p.DMA_CH0, esp_vocat::lcd_pins!(p), &mut reset).await?;
+```
+
+- The `log` feature (off by default) adds `board::init_logger()` and with it
+  `esp-println`; leave it off to choose your own console and logger.
+- `esp-hal`'s `unstable` feature is required: the I2S, DMA, LEDC and PSRAM drivers the
+  library uses are still unstable in esp-hal 1.x. Pin esp-hal to the same minor version
+  as this workspace (`~1.2.2`, see `[workspace.dependencies]` in the root `Cargo.toml`).
+- Copy `.cargo/config.toml`, `rust-toolchain.toml` and the demos' `build.rs` (linker
+  scripts) into your firmware.
+- Cargo pins the exact tag, so moving to a newer release means changing the tag.
+
+## Tests and CI
+
+The hardware-independent modules have unit tests that run on a PC. The workspace
+builds for the ESP32-S3 by default, so give the host target explicitly and use stable
+Rust (it ignores the `build-std` setting in `.cargo/config.toml`):
+
+```bash
+cargo +stable test -p esp-vocat -p esp-vocat-examples --lib --target aarch64-apple-darwin
+```
+
+(`x86_64-unknown-linux-gnu` and so on for other hosts.) Modules that need the chip
+are behind `#[cfg(target_arch = "xtensa")]`, and their dependencies are listed under
+`[target.'cfg(target_arch = "xtensa")'.dependencies]`.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy on the
+library and all demos with warnings as errors, a release build of every demo, and the
+tests.
 
 ## Demos
 
@@ -177,7 +219,7 @@ FSM directly, following ESP-IDF's `touch_ll`: timer mode, 500 measurement cycles
 channel, charge between 0.5 V and 2.7 V, both channels scanned continuously. The CPU
 only reads the raw counts.
 
-On top of the raw counts, `TouchInput`:
+On top of the raw counts, `TouchInput` (decoding in `gesture.rs`, unit-tested):
 
 1. Measures a baseline per pad at start-up. Don't touch the pads during the first
    ~200 ms.
@@ -628,16 +670,16 @@ INFO - MIC1  -88.0 dBFS (peak  -78.3)  MIC2  -88.2 dBFS (peak  -80.8)
 ### 09 – Internet radio alarm clock
 
 ```bash
-cp .cargo/radio.toml.example .cargo/radio.toml   # then fill in your Wi-Fi
-cargo run --release --bin 09_radio_alarm
+WIFI_SSID='my network' WIFI_PASSWORD='secret' cargo run --release --bin 09_radio_alarm
 ```
 
 A bedside alarm clock. It gets the time over Wi-Fi and wakes you with an internet radio
 stream that starts at −40 dB and rises to full volume over a minute. No SD card is
 needed.
 
-**Configuration.** Cargo reads `.cargo/radio.toml` (gitignored) at build time; rebuild
-after changing it.
+**Configuration.** Environment variables, read at build time (`option_env!`), so set
+them on the `cargo run` command line as above and rebuild after changing them. Without
+`WIFI_SSID` the demo stops with a message saying so.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -728,3 +770,16 @@ INFO - Wed 2026-11-04 11:58:20 | 127 kbit/s, buffer 32 KiB, 383 frames, decode 1
 INFO - alarm snoozed for 5 minutes
 INFO - radio: disconnected
 ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option.
+
+The ES7210 driver (`esp-vocat/src/es7210.rs`) and the ST77916 init sequence are ported
+from Espressif's `esp_codec_dev` and BSP (Apache-2.0), as noted in those files. The
+BMI270 configuration blob inside `oxstack-drivers` is Bosch's (BSD-3-Clause).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual
+licensed as above, without any additional terms or conditions.

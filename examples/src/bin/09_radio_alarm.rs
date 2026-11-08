@@ -53,32 +53,30 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use esp_backtrace as _;
-use esp_hal::{
-    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
-    timer::timg::TimerGroup,
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
+use esp_vocat::{
+    audio::{AudioOut, Error, Note, Synth, Wave},
+    board::{self, LcdReset, i2c_addr},
+    display::{Backlight, FrameBuffer},
+    i2s_out_pins, lcd_pins,
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
+    touchscreen::{Cst816, IrqLatch},
 };
-use log::{info, warn};
-use oxstack_drivers::es8311::{Es8311, Mode, Volume};
 use esp_vocat_examples::{
-    clock::{Clock, LocalTime},
+    clock::{self, Clock, ClockNow, LocalTime},
+    demo::{self, START_VOLUME, VOLUME_DB, flush, halt, volume_of},
     net,
     radio::{self, Player, Stats},
 };
-use esp_vocat::{
-    audio::{AudioOut, Error, I2sPins, Note, Synth, Wave},
-    board::{self, LcdReset, i2c_addr},
-    display::{Backlight, FrameBuffer, Lcd, LcdPins},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
-    touchscreen::Cst816,
-};
+use log::{info, warn};
+use oxstack_drivers::es8311::{Es8311, Mode};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 const NTP_SERVER: &str = "pool.ntp.org";
 const NTP_RESYNC: Duration = Duration::from_secs(6 * 3600);
 /// Codec DAC volume steps in dB; the software ramp works below these.
-const VOLUME_DB: [i16; 5] = [-30, -20, -12, -6, 0];
-const START_VOLUME: usize = 2;
 /// Volume ramp of the alarm, and of the radio switched on by hand.
 const ALARM_RAMP: Duration = Duration::from_secs(60);
 const MANUAL_RAMP: Duration = Duration::from_secs(3);
@@ -174,7 +172,7 @@ struct App {
 impl App {
     fn status(&self) -> String {
         if let Some(s) = self.snooze_until {
-            let t = LocalTime::from_unix(s).date;
+            let t = clock::local_time(s).date;
             format!("snoozed until {:02}:{:02}", t.hour, t.minute)
         } else if self.alarm_on {
             format!("alarm {}", hhmm(self.alarm))
@@ -194,16 +192,14 @@ fn hhmm(minute_of_day: u16) -> String {
 )]
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    let peripherals = board::init();
     // The Wi-Fi driver needs about 60 KiB of internal RAM on top of the
     // default heap.
-    esp_alloc::heap_allocator!(size: 96 * 1024);
+    esp_vocat_examples::start!(
+        peripherals,
+        "Demo 09: radio alarm clock",
+        extra_heap = 96 * 1024
+    );
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 09: radio alarm clock ===");
     info!("screen: touch = edit alarm | back pad: alarm on/off | front pad: radio on/off");
     info!("front long = alarm in 1 min (test) | back long = volume");
     info!("ringing: screen or back pad = stop, front pad = snooze");
@@ -213,12 +209,7 @@ async fn main(spawner: Spawner) -> ! {
     let _codec_power = board::codec_power_on(peripherals.GPIO48);
     let _lcd_power = board::peripheral_power_on(peripherals.GPIO9);
     Timer::after(Duration::from_millis(20)).await;
-    let pins = I2sPins {
-        mclk: peripherals.GPIO42,
-        bclk: peripherals.GPIO40,
-        ws: peripherals.GPIO39,
-        dout: peripherals.GPIO41,
-    };
+    let pins = i2s_out_pins!(peripherals);
     let out = match AudioOut::new(peripherals.I2S0, peripherals.DMA_CH1, pins) {
         Ok(out) => out,
         Err(e) => halt("I2S init failed", e).await,
@@ -228,20 +219,8 @@ async fn main(spawner: Spawner) -> ! {
     // The LCD reset also resets the touch controller, so it goes before I2C.
     let mut backlight = Backlight::new(peripherals.LEDC, peripherals.GPIO44);
     let mut reset = LcdReset::new(peripherals.GPIO47);
-    let lcd_pins = LcdPins {
-        clk: peripherals.GPIO18,
-        d0: peripherals.GPIO46,
-        d1: peripherals.GPIO13,
-        d2: peripherals.GPIO11,
-        d3: peripherals.GPIO12,
-        cs: peripherals.GPIO14,
-        dc: peripherals.GPIO45,
-    };
-    let mut lcd = match Lcd::new(peripherals.SPI2, peripherals.DMA_CH0, lcd_pins, &mut reset).await
-    {
-        Ok(lcd) => lcd,
-        Err(e) => halt("LCD init failed", e).await,
-    };
+    let lcd_pins = lcd_pins!(peripherals);
+    let mut lcd = demo::lcd(peripherals.SPI2, peripherals.DMA_CH0, lcd_pins, &mut reset).await;
     let mut fb = FrameBuffer::new();
     message(&mut fb, "connecting to Wi-Fi...");
     flush(&mut lcd, &mut fb).await;
@@ -267,17 +246,13 @@ async fn main(spawner: Spawner) -> ! {
     if let Err(e) = ts.init().await {
         halt("touch controller did not answer", e).await;
     }
-    let mut ts_int = Input::new(
+    let ts_int = Input::new(
         peripherals.GPIO10,
         InputConfig::default().with_pull(Pull::Up),
     );
+    spawner.spawn(touch_irq_task(ts_int).unwrap());
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut pads = TouchInput::new(pads).await;
 
     // Network and time.
@@ -286,7 +261,7 @@ async fn main(spawner: Spawner) -> ! {
         flush(&mut lcd, &mut fb).await;
         halt(
             "no Wi-Fi credentials",
-            "copy .cargo/radio.toml.example to .cargo/radio.toml",
+            "build with WIFI_SSID=... WIFI_PASSWORD=... cargo run --release --bin 09_radio_alarm",
         )
         .await
     };
@@ -316,7 +291,7 @@ async fn main(spawner: Spawner) -> ! {
             }
         }
     };
-    CLOCK.lock(|c| c.set(Some(Clock::new(unix))));
+    CLOCK.lock(|c| c.set(Some(clock::synced(unix))));
     let t = clock().local();
     info!(
         "NTP: {} {} (UTC{:+}:{:02}{})",
@@ -362,14 +337,14 @@ async fn main(spawner: Spawner) -> ! {
         }
 
         // Next second boundary of the clock.
-        let c = clock();
-        let next_tick =
-            c.synced_at() + Duration::from_secs(c.synced_at().elapsed().as_secs() + 1);
+        let next_tick = clock().next_tick(Instant::now());
+        // INT pulses are latched by touch_irq_task, so none are lost while
+        // this loop draws; poll as well while a finger is down.
         let wait_touch = async {
             if finger {
-                let _ = select(ts_int.wait_for_falling_edge(), Timer::after(TOUCH_POLL)).await;
+                let _ = select(TOUCH_IRQ.wait(), Timer::after(TOUCH_POLL)).await;
             } else {
-                ts_int.wait_for_falling_edge().await;
+                TOUCH_IRQ.wait().await;
             }
         };
 
@@ -576,10 +551,6 @@ fn press(app: &mut App, b: Button) {
     app.snooze_until = None;
 }
 
-fn volume_of(step: usize) -> Volume {
-    Volume::from_half_db(VOLUME_DB[step] * 2)
-}
-
 // ------------------------------------------------------------------ drawing
 
 const CENTER: Point = Point::new(180, 180);
@@ -660,13 +631,8 @@ fn text(fb: &mut FrameBuffer, s: &str, y: i32, color: Rgb565, large: bool) {
 /// Text centred on `at.x`, with its baseline at `at.y`.
 fn text_at(fb: &mut FrameBuffer, s: &str, at: Point, color: Rgb565, large: bool) {
     let font = if large { &FONT_10X20 } else { &FONT_9X15 };
-    let _ = Text::with_alignment(
-        s,
-        at,
-        MonoTextStyle::new(font, color),
-        Alignment::Center,
-    )
-    .draw(fb);
+    let _ =
+        Text::with_alignment(s, at, MonoTextStyle::new(font, color), Alignment::Center).draw(fb);
 }
 
 /// The 60 second dots around the edge; dots up to `lit` highlighted.
@@ -748,10 +714,21 @@ fn button_rect(b: Button) -> Rectangle {
 }
 
 fn button_at(p: Point) -> Option<Button> {
-    // A little larger than drawn: fingers are not precise.
+    // A button that was hit as drawn wins. Otherwise the targets are 8 px
+    // larger (fingers are not precise); where two enlarged targets overlap
+    // (Toggle and Done are 8 px apart), the nearer centre wins.
     BUTTONS
         .into_iter()
-        .find(|&b| button_rect(b).offset(8).contains(p))
+        .find(|&b| button_rect(b).contains(p))
+        .or_else(|| {
+            BUTTONS
+                .into_iter()
+                .filter(|&b| button_rect(b).offset(8).contains(p))
+                .min_by_key(|&b| {
+                    let d = p - button_rect(b).center();
+                    d.x * d.x + d.y * d.y
+                })
+        })
 }
 
 fn draw_button(fb: &mut FrameBuffer, b: Button, alarm_on: bool) {
@@ -782,13 +759,6 @@ fn message(fb: &mut FrameBuffer, s: &str) {
     text(fb, s, 186, TEXT, true);
 }
 
-#[allow(clippy::large_stack_frames, reason = "async LCD transfers")]
-async fn flush(lcd: &mut Lcd, fb: &mut FrameBuffer) {
-    if let Err(e) = lcd.flush(fb).await {
-        warn!("flush failed: {e:?}");
-    }
-}
-
 // -------------------------------------------------------------------- tasks
 
 /// Keeps the I2S ring filled from the radio player, with the fallback beeper
@@ -798,7 +768,7 @@ async fn flush(lcd: &mut Lcd, fb: &mut FrameBuffer) {
     reason = "the synthesiser's sine table and a mixing buffer, ~1.5 KiB"
 )]
 #[embassy_executor::task]
-async fn audio_task(mut out: AudioOut, player: &'static mut Player) {
+async fn audio_task(mut out: AudioOut<'static>, player: &'static mut Player) {
     let mut synth = Synth::new();
     synth.set_wave(Wave::Square);
     loop {
@@ -837,6 +807,18 @@ async fn audio_task(mut out: AudioOut, player: &'static mut Player) {
     clippy::large_stack_frames,
     reason = "the UDP socket buffers live in the task's future"
 )]
+/// The touch controller's INT pulses (GPIO10), latched.
+static TOUCH_IRQ: IrqLatch = IrqLatch::new();
+
+#[embassy_executor::task]
+async fn touch_irq_task(pin: Input<'static>) {
+    TOUCH_IRQ.watch(pin).await
+}
+
+#[allow(
+    clippy::large_stack_frames,
+    reason = "the SNTP query's UDP socket buffers and DNS future, ~2 KiB"
+)]
 #[embassy_executor::task]
 async fn ntp_task(stack: Stack<'static>) {
     loop {
@@ -844,17 +826,10 @@ async fn ntp_task(stack: Stack<'static>) {
         match net::ntp_time(stack, NTP_SERVER).await {
             Ok(unix) => {
                 let drift = unix as i64 - clock().unix() as i64;
-                CLOCK.lock(|c| c.set(Some(Clock::new(unix))));
+                CLOCK.lock(|c| c.set(Some(clock::synced(unix))));
                 info!("NTP resync, clock was off by {drift} s");
             }
             Err(e) => warn!("NTP resync failed: {e:?}"),
         }
-    }
-}
-
-async fn halt(what: &str, e: impl core::fmt::Debug) -> ! {
-    warn!("{what}: {e:?}");
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
     }
 }

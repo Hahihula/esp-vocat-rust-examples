@@ -30,17 +30,20 @@ use embedded_graphics::{
     primitives::{Circle, Ellipse, Line, PrimitiveStyle, Rectangle, Triangle},
 };
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
+use esp_vocat::{
+    board::{self, LcdReset, i2c_addr},
+    display::{Backlight, FrameBuffer},
+    lcd_pins,
+    motion::{MotionDetector, MotionEvent},
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
+    touchscreen::Cst816,
+};
 use libm::{cosf, sinf, sqrtf};
 use log::{info, warn};
 use oxstack_drivers::bmi270::{AccelRange, Bmi270, Config, DataRate, GyroRange};
-use esp_vocat::{
-    board::{self, LcdReset, i2c_addr},
-    display::{Backlight, FrameBuffer, Lcd, LcdPins},
-    motion::{MotionDetector, MotionEvent},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
-    touchscreen::Cst816,
-};
+
+use esp_vocat_examples::{demo, demo::flush, demo::halt};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -112,13 +115,8 @@ impl Pupil {
 )]
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
-    let peripherals = board::init();
+    esp_vocat_examples::start!(peripherals, "Demo 06: googly cat eyes (BMI270 + LCD)");
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 06: googly cat eyes (BMI270 + LCD) ===");
     info!("tilt or move the cat; touch an eye to blink; shake = dizzy; back pad tap = happy");
 
     board::psram_heap(peripherals.PSRAM);
@@ -126,19 +124,8 @@ async fn main(_spawner: Spawner) -> ! {
     Timer::after(Duration::from_millis(20)).await;
     let mut backlight = Backlight::new(peripherals.LEDC, peripherals.GPIO44);
     let mut reset = LcdReset::new(peripherals.GPIO47);
-    let pins = LcdPins {
-        clk: peripherals.GPIO18,
-        d0: peripherals.GPIO46,
-        d1: peripherals.GPIO13,
-        d2: peripherals.GPIO11,
-        d3: peripherals.GPIO12,
-        cs: peripherals.GPIO14,
-        dc: peripherals.GPIO45,
-    };
-    let mut lcd = match Lcd::new(peripherals.SPI2, peripherals.DMA_CH0, pins, &mut reset).await {
-        Ok(lcd) => lcd,
-        Err(e) => halt("LCD init failed", e).await,
-    };
+    let pins = lcd_pins!(peripherals);
+    let mut lcd = demo::lcd(peripherals.SPI2, peripherals.DMA_CH0, pins, &mut reset).await;
 
     // The touch controller and the IMU share the I2C bus.
     let i2c = board::i2c(peripherals.I2C0, peripherals.GPIO1, peripherals.GPIO2)
@@ -158,12 +145,7 @@ async fn main(_spawner: Spawner) -> ! {
         halt("BMI270 init failed", e).await;
     }
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut pads = TouchInput::new(pads).await;
 
     let mut fb = FrameBuffer::new();
@@ -181,7 +163,7 @@ async fn main(_spawner: Spawner) -> ! {
         .await
         .map(|s| s.accel)
         .unwrap_or([0.0, 0.0, -1.0]);
-    let mut motion = MotionDetector::new(first);
+    let mut motion = MotionDetector::new(first, Instant::now());
 
     draw_eyes(&mut fb, &pupils, &blink_at, false);
     flush(&mut lcd, &mut fb).await;
@@ -213,7 +195,7 @@ async fn main(_spawner: Spawner) -> ! {
         // which is exactly what makes googly eyes swing.
         let (ax, ay) = match imu.read().await {
             Ok(s) => {
-                if let Some(MotionEvent::Shake) = motion.update(s.accel, s.gyro) {
+                if let Some(MotionEvent::Shake) = motion.update(Instant::now(), s.accel, s.gyro) {
                     info!("shake: dizzy");
                     dizzy_until = now + DIZZY;
                 }
@@ -406,19 +388,5 @@ fn draw_face(fb: &mut FrameBuffer) {
         let _ = Line::new(Point::new(220, y), Point::new(310, y + tilt))
             .into_styled(whisker)
             .draw(fb);
-    }
-}
-
-#[allow(clippy::large_stack_frames, reason = "async LCD transfers")]
-async fn flush(lcd: &mut Lcd, fb: &mut FrameBuffer) {
-    if let Err(e) = lcd.flush(fb).await {
-        warn!("flush failed: {e:?}");
-    }
-}
-
-async fn halt(what: &str, e: impl core::fmt::Debug) -> ! {
-    warn!("{what}: {e:?}");
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
     }
 }

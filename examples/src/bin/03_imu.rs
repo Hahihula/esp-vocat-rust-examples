@@ -21,14 +21,14 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{Either3, select3};
 use embassy_time::{Delay, Duration, Instant, Ticker};
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use log::{info, warn};
-use oxstack_drivers::bmi270::{AccelRange, Bmi270, Config, DataRate, GyroRange, Sample};
 use esp_vocat::{
     board::{self, GreenLed, i2c_addr},
     motion::{MotionDetector, MotionEvent, norm},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
 };
+use log::{info, warn};
+use oxstack_drivers::bmi270::{AccelRange, Bmi270, Config, DataRate, GyroRange, Sample};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -43,13 +43,8 @@ const REPORT: Duration = Duration::from_secs(1);
 )]
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
-    let peripherals = board::init();
+    esp_vocat_examples::start!(peripherals, "Demo 03: BMI270 IMU (I2C 0x68)");
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 03: BMI270 IMU (I2C 0x68) ===");
     info!("front tap = set upright, back tap = detailed reading");
 
     let mut led = GreenLed::new(peripherals.GPIO43);
@@ -75,12 +70,7 @@ async fn main(_spawner: Spawner) -> ! {
         }
     }
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut touch = TouchInput::new(pads).await;
 
     // The position at start-up is upright; average a few samples for it.
@@ -89,7 +79,7 @@ async fn main(_spawner: Spawner) -> ! {
         "upright reference: [{:+.2} {:+.2} {:+.2}] g (sensor axes)",
         up[0], up[1], up[2]
     );
-    let mut motion = MotionDetector::new(up);
+    let mut motion = MotionDetector::new(up, Instant::now());
 
     let mut sample_tick = Ticker::every(SAMPLE);
     let mut report_tick = Ticker::every(REPORT);
@@ -110,7 +100,7 @@ async fn main(_spawner: Spawner) -> ! {
                     }
                 };
                 last = s;
-                if let Some(event) = motion.update(s.accel, s.gyro) {
+                if let Some(event) = motion.update(Instant::now(), s.accel, s.gyro) {
                     report_event(event, &mut led);
                 }
             }
@@ -131,6 +121,8 @@ async fn main(_spawner: Spawner) -> ! {
                 );
             }
             Either3::Third(TouchEvent::Tap(Pad::Front)) => {
+                // Blocks the sample loop for ~160 ms; set_upright also
+                // forgets the last sample, so the gap can't look like a knock.
                 let up = average_accel(&mut imu).await;
                 motion.set_upright(up);
                 info!(

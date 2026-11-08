@@ -38,16 +38,20 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use libm::{log10f, sqrtf};
-use log::{info, warn};
 use esp_vocat::{
-    audio::{AudioIn, I2sInPins},
+    audio::{AudioIn, Error},
     board::{self, GreenLed, LcdReset},
-    display::{Backlight, FrameBuffer, Lcd, LcdPins},
+    display::{Backlight, FrameBuffer},
     es7210::{Es7210, Gain},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
 };
+use libm::{log10f, sqrtf};
+use log::{error, info, warn};
+
+use esp_vocat_examples::{demo, demo::flush, demo::halt};
+
+use esp_vocat::{i2s_in_pins, lcd_pins};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -82,13 +86,8 @@ static SCOPE_BUF: Mutex<CriticalSectionRawMutex, RefCell<[[i16; 2]; SCOPE]>> =
 )]
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    let peripherals = board::init();
+    esp_vocat_examples::start!(peripherals, "Demo 08: microphones (ES7210, 16 kHz)");
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 08: microphones (ES7210, 16 kHz) ===");
     info!("back tap = mic gain, front tap = freeze scope; clap to flash the LED");
 
     board::psram_heap(peripherals.PSRAM);
@@ -97,12 +96,7 @@ async fn main(spawner: Spawner) -> ! {
     Timer::after(Duration::from_millis(20)).await;
 
     // I2S first: the ES7210 needs MCLK before it can be configured.
-    let pins = I2sInPins {
-        mclk: peripherals.GPIO42,
-        bclk: peripherals.GPIO40,
-        ws: peripherals.GPIO39,
-        din: peripherals.GPIO3,
-    };
+    let pins = i2s_in_pins!(peripherals);
     let input = match AudioIn::new(peripherals.I2S0, peripherals.DMA_CH1, pins, SAMPLE_RATE) {
         Ok(i) => i,
         Err(e) => halt("I2S init failed", e).await,
@@ -129,20 +123,8 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut backlight = Backlight::new(peripherals.LEDC, peripherals.GPIO44);
     let mut reset = LcdReset::new(peripherals.GPIO47);
-    let lcd_pins = LcdPins {
-        clk: peripherals.GPIO18,
-        d0: peripherals.GPIO46,
-        d1: peripherals.GPIO13,
-        d2: peripherals.GPIO11,
-        d3: peripherals.GPIO12,
-        cs: peripherals.GPIO14,
-        dc: peripherals.GPIO45,
-    };
-    let mut lcd = match Lcd::new(peripherals.SPI2, peripherals.DMA_CH0, lcd_pins, &mut reset).await
-    {
-        Ok(lcd) => lcd,
-        Err(e) => halt("LCD init failed", e).await,
-    };
+    let lcd_pins = lcd_pins!(peripherals);
+    let mut lcd = demo::lcd(peripherals.SPI2, peripherals.DMA_CH0, lcd_pins, &mut reset).await;
     let mut fb = FrameBuffer::new();
     let _ = fb.clear(Rgb565::BLACK);
     let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
@@ -151,12 +133,7 @@ async fn main(spawner: Spawner) -> ! {
     flush(&mut lcd, &mut fb).await;
     backlight.fade(0, 100, Duration::from_millis(400));
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut touch = TouchInput::new(pads).await;
     let mut led = GreenLed::new(peripherals.GPIO43);
 
@@ -310,7 +287,7 @@ fn draw(
 /// Reads the microphones continuously and publishes a [`Levels`] block every
 /// [`BLOCK`] samples.
 #[embassy_executor::task]
-async fn mic_task(mut input: AudioIn) {
+async fn mic_task(mut input: AudioIn<'static>) {
     let mut sum_sq = [0f32; 2];
     let mut peak = [0i32; 2];
     let mut count = 0usize;
@@ -349,9 +326,15 @@ async fn mic_task(mut input: AudioIn) {
                 }
             })
             .await;
-        if let Err(e) = result {
-            warn!("mic stream error: {e:?}");
-            Timer::after(Duration::from_millis(100)).await;
+        match result {
+            Ok(_) => {}
+            // The ring overflowed; AudioIn has restarted the stream. Read on
+            // at once, or it overflows again.
+            Err(Error::Dma(e)) => warn!("mic stream overflowed and restarted: {e:?}"),
+            Err(e) => {
+                error!("mic stream stopped: {e:?}");
+                return;
+            }
         }
     }
 }
@@ -359,18 +342,4 @@ async fn mic_task(mut input: AudioIn) {
 /// Amplitude to dBFS (full scale = 32768).
 fn db(amplitude: f32) -> f32 {
     20.0 * log10f(amplitude.max(1.0) / 32768.0)
-}
-
-#[allow(clippy::large_stack_frames, reason = "async LCD transfers")]
-async fn flush(lcd: &mut Lcd, fb: &mut FrameBuffer) {
-    if let Err(e) = lcd.flush(fb).await {
-        warn!("flush failed: {e:?}");
-    }
-}
-
-async fn halt(what: &str, e: impl core::fmt::Debug) -> ! {
-    warn!("{what}: {e:?}");
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
-    }
 }

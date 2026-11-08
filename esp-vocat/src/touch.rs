@@ -5,10 +5,15 @@
 //! S3: the FSM runs in timer mode and scans both channels continuously, and
 //! the CPU only reads the raw counts.
 //!
-//! A touch increases the raw count. [`TouchInput`] tracks a slowly adapting
-//! baseline per pad, detects touches against it with hysteresis and decodes
-//! taps, long touches and swipes from one pad to the other.
+//! A touch increases the raw count. [`TouchInput`] polls both pads and feeds
+//! the counts to [`GestureDecoder`] ([`crate::gesture`], tested on the
+//! host), which tracks a baseline per pad and decodes taps, long touches
+//! and swipes from one pad to the other.
 
+pub use crate::gesture::{
+    DRIFT_PERMILLE, GestureDecoder, LONG_TOUCH, Pad, PadReading, RELEASE_PERMILLE, SWIPE_WINDOW,
+    TOUCH_PERMILLE, TouchEvent,
+};
 use embassy_time::{Duration, Instant, Timer};
 use esp_hal::peripherals::{GPIO6, GPIO7, RTC_CNTL, RTC_IO, SENS};
 
@@ -19,47 +24,13 @@ const SLEEP_CYCLES: u16 = 0xF;
 /// Charge current, 0..=7 (ESP-IDF default slope).
 const DAC_SLOPE: u8 = 7;
 
-/// One of the two touch pads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pad {
-    /// TOUCH_PAD1 on GPIO6, at the back of the cat's head.
-    Back,
-    /// TOUCH_PAD2 on GPIO7, at the front of the cat's head.
-    Front,
-}
-
-impl Pad {
-    pub const ALL: [Pad; 2] = [Pad::Back, Pad::Front];
-
-    /// Touch sensor channel of the pad (equal to the GPIO number).
-    pub const fn channel(self) -> usize {
-        match self {
-            Pad::Back => 6,
-            Pad::Front => 7,
-        }
-    }
-
-    const fn other(self) -> Pad {
-        match self {
-            Pad::Back => Pad::Front,
-            Pad::Front => Pad::Back,
-        }
-    }
-
-    /// Index of the pad (0 or 1), e.g. for per-pad arrays.
-    pub const fn index(self) -> usize {
-        match self {
-            Pad::Back => 0,
-            Pad::Front => 1,
-        }
-    }
-
-    pub const fn name(self) -> &'static str {
-        match self {
-            Pad::Back => "back",
-            Pad::Front => "front",
-        }
-    }
+/// [`TouchPads::new`] with the pads taken out of
+/// `esp_hal::peripherals::Peripherals`: `TouchInput::new(touch_pads!(p)).await`.
+#[macro_export]
+macro_rules! touch_pads {
+    ($p:expr) => {
+        $crate::touch::TouchPads::new($p.SENS, $p.RTC_IO, $p.GPIO6, $p.GPIO7)
+    };
 }
 
 /// The touch sensor hardware with both pads enabled.
@@ -159,6 +130,7 @@ impl<'d> TouchPads<'d> {
     }
 
     /// Returns the latest raw count of a pad. Higher means more capacitance.
+    #[must_use]
     pub fn read_raw(&self, pad: Pad) -> u32 {
         // `sar_touch_status(0)` is channel 1; channel 0 has no status register.
         SENS::regs()
@@ -180,75 +152,11 @@ fn force_timer_done() {
 
 /// Poll period of [`TouchInput`].
 pub const POLL: Duration = Duration::from_millis(20);
-/// A touch is detected when the reading rises this many per mille above the baseline.
-///
-/// Measured on the VoCat: a finger on a pad gives +50..+85 per mille, while
-/// the neighbouring pad picks up +10..+30 per mille through the housing.
-pub const TOUCH_PERMILLE: u32 = 40;
-/// A touch ends when the reading falls below this many per mille above the baseline.
-pub const RELEASE_PERMILLE: u32 = 20;
-/// The baseline only follows rising readings up to this many per mille above it.
-pub const DRIFT_PERMILLE: u32 = 5;
-/// Touches held at least this long are long touches.
-pub const LONG_TOUCH: Duration = Duration::from_millis(800);
-/// Touching the other pad within this time after a touch starts is a swipe.
-pub const SWIPE_WINDOW: Duration = Duration::from_millis(400);
-
-/// Filtered state of one pad.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PadReading {
-    /// Latest raw count.
-    pub raw: u32,
-    /// Raw counts averaged over the last few polls.
-    pub smooth: u32,
-    /// Slowly adapting value of the untouched pad.
-    pub baseline: u32,
-    /// Debounced touch state.
-    pub touched: bool,
-}
-
-impl PadReading {
-    /// How far the smoothed reading is above the baseline, in per mille.
-    pub fn delta_permille(&self) -> i32 {
-        if self.baseline == 0 {
-            return 0;
-        }
-        ((i64::from(self.smooth) - i64::from(self.baseline)) * 1000 / i64::from(self.baseline))
-            as i32
-    }
-}
-
-/// Something that happened on the pads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TouchEvent {
-    /// A pad started being touched.
-    Down(Pad),
-    /// A pad stopped being touched after the given time.
-    Up(Pad, Duration),
-    /// A short touch of one pad with no swipe following.
-    /// Reported [`SWIPE_WINDOW`] after the touch started at the earliest.
-    Tap(Pad),
-    /// A pad has been held for [`LONG_TOUCH`]; reported while it is still held.
-    Long(Pad),
-    /// A touch of `from` followed by `to` within [`SWIPE_WINDOW`].
-    Swipe { from: Pad, to: Pad },
-}
-
-#[derive(Clone, Copy, Default)]
-struct PadGesture {
-    down_at: Option<Instant>,
-    /// The current touch is already part of a long touch or swipe.
-    consumed: bool,
-}
 
 /// Touch detection and gesture decoding on top of [`TouchPads`].
 pub struct TouchInput<'d> {
     pads: TouchPads<'d>,
-    readings: [PadReading; 2],
-    gestures: [PadGesture; 2],
-    /// A released short touch waiting to see whether a swipe follows.
-    pending_tap: Option<(Pad, Instant)>,
-    queue: [Option<TouchEvent>; 4],
+    decoder: GestureDecoder,
 }
 
 impl<'d> TouchInput<'d> {
@@ -265,155 +173,28 @@ impl<'d> TouchInput<'d> {
                 sums[pad.index()] += pads.read_raw(pad);
             }
         }
-        let mut readings = [PadReading::default(); 2];
-        for pad in Pad::ALL {
-            let avg = sums[pad.index()] / SAMPLES;
-            readings[pad.index()] = PadReading {
-                raw: avg,
-                smooth: avg,
-                baseline: avg,
-                touched: false,
-            };
-        }
         Self {
             pads,
-            readings,
-            gestures: [PadGesture::default(); 2],
-            pending_tap: None,
-            queue: [None; 4],
+            decoder: GestureDecoder::new(sums.map(|s| s / SAMPLES)),
         }
     }
 
     /// Returns the latest filtered state of a pad.
+    #[must_use]
     pub fn reading(&self, pad: Pad) -> PadReading {
-        self.readings[pad.index()]
+        self.decoder.reading(pad)
     }
 
-    /// Waits for the next event, polling the pads every [`POLL`].
+    /// Waits for the next event, polling the pads every [`POLL`]. Safe to
+    /// cancel: queued events stay queued.
     pub async fn next_event(&mut self) -> TouchEvent {
         loop {
-            if let Some(event) = self.pop() {
+            if let Some(event) = self.decoder.pop() {
                 return event;
             }
             Timer::after(POLL).await;
-            self.poll();
+            let raw = Pad::ALL.map(|pad| self.pads.read_raw(pad));
+            self.decoder.update(Instant::now(), raw);
         }
     }
-
-    fn push(&mut self, event: TouchEvent) {
-        if let Some(slot) = self.queue.iter_mut().find(|e| e.is_none()) {
-            *slot = Some(event);
-        }
-    }
-
-    fn pop(&mut self) -> Option<TouchEvent> {
-        let event = self.queue[0].take();
-        self.queue.rotate_left(1);
-        event
-    }
-
-    /// Reads both pads once and queues the resulting events.
-    fn poll(&mut self) {
-        let now = Instant::now();
-        for pad in Pad::ALL {
-            let raw = self.pads.read_raw(pad);
-            if let Some(touched) = update_reading(&mut self.readings[pad.index()], raw) {
-                if touched {
-                    self.on_down(pad, now);
-                } else {
-                    self.on_up(pad, now);
-                }
-            }
-
-            let g = &mut self.gestures[pad.index()];
-            if let Some(down_at) = g.down_at
-                && !g.consumed
-                && now - down_at >= LONG_TOUCH
-            {
-                g.consumed = true;
-                self.push(TouchEvent::Long(pad));
-            }
-        }
-
-        if let Some((pad, down_at)) = self.pending_tap
-            && now - down_at >= SWIPE_WINDOW
-        {
-            self.pending_tap = None;
-            self.push(TouchEvent::Tap(pad));
-        }
-    }
-
-    fn on_down(&mut self, pad: Pad, now: Instant) {
-        self.push(TouchEvent::Down(pad));
-        self.gestures[pad.index()] = PadGesture {
-            down_at: Some(now),
-            consumed: false,
-        };
-
-        // Swipe: the other pad was touched shortly before, and is either still
-        // held or its short touch is waiting as a pending tap.
-        let other = pad.other();
-        let g = self.gestures[other.index()];
-        let held_recently = g
-            .down_at
-            .is_some_and(|t| !g.consumed && now - t <= SWIPE_WINDOW);
-        let pending =
-            matches!(self.pending_tap, Some((p, t)) if p == other && now - t <= SWIPE_WINDOW);
-        if held_recently || pending {
-            self.pending_tap = None;
-            self.gestures[other.index()].consumed = true;
-            self.gestures[pad.index()].consumed = true;
-            self.push(TouchEvent::Swipe {
-                from: other,
-                to: pad,
-            });
-        }
-    }
-
-    fn on_up(&mut self, pad: Pad, now: Instant) {
-        let g = core::mem::take(&mut self.gestures[pad.index()]);
-        let down_at = g.down_at.unwrap_or(now);
-        self.push(TouchEvent::Up(pad, now - down_at));
-        if !g.consumed {
-            // A tap only once no swipe can follow any more. An older pending
-            // tap can't become a swipe now, so report it.
-            if let Some((p, _)) = self.pending_tap.replace((pad, down_at)) {
-                self.push(TouchEvent::Tap(p));
-            }
-        }
-    }
-}
-
-/// Feeds one raw sample into a pad's filter. Returns the new touch state if it changed.
-fn update_reading(r: &mut PadReading, raw: u32) -> Option<bool> {
-    r.raw = raw;
-    r.smooth = (r.smooth * 3 + raw) / 4;
-
-    let above = r.smooth.saturating_sub(r.baseline);
-    let was = r.touched;
-    if r.touched {
-        r.touched = above * 1000 > r.baseline * RELEASE_PERMILLE;
-    } else {
-        r.touched = above * 1000 > r.baseline * TOUCH_PERMILLE;
-    }
-
-    // Follow slow drift (temperature, humidity) only while untouched. Falling
-    // readings are followed faster, so a baseline taken during a touch
-    // recovers. Rising readings are only followed close to the baseline: a
-    // hovering finger or a touch on the other pad raises the count by 10-30
-    // per mille without crossing the threshold, and must not drag the
-    // baseline up.
-    if !r.touched {
-        let diff = i64::from(r.smooth) - i64::from(r.baseline);
-        let step = if diff < 0 {
-            diff / 8
-        } else if above * 1000 <= r.baseline * DRIFT_PERMILLE {
-            diff / 64
-        } else {
-            0
-        };
-        r.baseline = (i64::from(r.baseline) + step) as u32;
-    }
-
-    (r.touched != was).then_some(r.touched)
 }

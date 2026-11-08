@@ -4,11 +4,18 @@ description  = "Demos for the ESP-VoCat v1.2, built on the esp-vocat library"
 edition.workspace      = true
 rust-version.workspace = true
 version.workspace      = true
+license.workspace      = true
 repository.workspace   = true
 publish      = false
 
+# Always built: the hardware-independent modules (time, url), unit-tested
+# on a PC: `cargo +stable test -p esp-vocat-examples --lib --target <host>`.
 [dependencies]
-esp-vocat              = { workspace = true }
+embassy-time           = { workspace = true }
+
+# The demos and their helpers, only for the ESP32-S3.
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+esp-vocat              = { workspace = true, features = ["log"] }
 esp-hal                = { workspace = true }
 esp-rtos               = { workspace = true }
 esp-radio              = { workspace = true }
@@ -22,7 +29,6 @@ embedded-io-async      = { workspace = true }
 nanomp3-core           = { workspace = true }
 log                    = { workspace = true }
 embassy-executor       = { workspace = true }
-embassy-time           = { workspace = true }
 embassy-futures        = { workspace = true }
 embassy-sync           = { workspace = true }
 embassy-embedded-hal   = { workspace = true }

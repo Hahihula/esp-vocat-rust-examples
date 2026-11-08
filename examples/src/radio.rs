@@ -17,6 +17,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use crate::url::{self, Url};
 use embassy_futures::select::{Either, select};
 use embassy_net::{IpAddress, Stack, dns::DnsQueryType, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pipe::Pipe, signal::Signal};
@@ -117,26 +118,6 @@ pub enum StreamError {
     Closed,
 }
 
-struct Url<'a> {
-    host: &'a str,
-    port: u16,
-    path: &'a str,
-}
-
-/// Splits `http://host[:port][/path]`.
-fn parse_url(url: &str) -> Option<Url<'_>> {
-    let rest = url.strip_prefix("http://")?;
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse().ok()?),
-        None => (authority, 80),
-    };
-    (!host.is_empty()).then_some(Url { host, port, path })
-}
-
 const RX_BYTES: usize = 8 * 1024;
 const TX_BYTES: usize = 1024;
 const HEADER_BYTES: usize = 2048;
@@ -203,7 +184,7 @@ async fn request(
     url: &str,
     buffers: &mut Buffers,
 ) -> Result<Option<String>, StreamError> {
-    let Url { host, port, path } = parse_url(url).ok_or(StreamError::BadUrl)?;
+    let Url { host, port, path } = url::parse(url).ok_or(StreamError::BadUrl)?;
     let addrs = stack
         .dns_query(host, DnsQueryType::A)
         .await
@@ -399,8 +380,9 @@ impl Player {
                     }
                 }
             }
-            let frac = self.phase as i32 >> 1; // 0..32768
-            let v = self.prev + (((self.next - self.prev) * frac) >> 15);
+            let frac = i64::from(self.phase >> 1); // 0..32768
+            // In i64: the difference times frac comes within 0.005% of i32::MAX.
+            let v = self.prev + ((i64::from(self.next - self.prev) * frac) >> 15) as i32;
             *s = ((v * gain) >> 15).clamp(-32768, 32767) as i16;
             self.phase += self.step;
         }
@@ -510,9 +492,15 @@ impl Player {
                     }
                     return true;
                 }
-                Ok(_) | Err(DecodeError::ReservoirUnavailable(_)) => {}
                 Err(DecodeError::NoFrame) if used == 0 => return false,
+                Ok(_) | Err(DecodeError::ReservoirUnavailable(_)) => {}
                 Err(e) => warn!("radio: {e}"),
+            }
+            // Never spin on the same input: this runs inside the audio fill
+            // callback, and a stall there starves the I2S DMA. Skip a byte
+            // and let the decoder resync.
+            if used == 0 {
+                self.win_start += 1;
             }
         }
     }

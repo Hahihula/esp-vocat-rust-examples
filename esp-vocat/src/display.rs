@@ -85,7 +85,9 @@ const OPCODE_WRITE_COLOR: u8 = 0x32;
 /// Errors from the LCD driver.
 #[derive(Debug)]
 pub enum Error {
+    /// A transfer failed.
     Spi(esp_hal::spi::Error),
+    /// The SPI configuration was rejected.
     Config(esp_hal::spi::master::ConfigError),
 }
 
@@ -95,22 +97,41 @@ impl From<esp_hal::spi::Error> for Error {
     }
 }
 
-/// The pins of the LCD bus.
-pub struct LcdPins {
-    pub clk: GPIO18<'static>,
-    pub d0: GPIO46<'static>,
-    pub d1: GPIO13<'static>,
-    pub d2: GPIO11<'static>,
-    pub d3: GPIO12<'static>,
-    pub cs: GPIO14<'static>,
-    pub dc: GPIO45<'static>,
+/// The pins of the LCD bus. [`lcd_pins!`](crate::lcd_pins) fills it in
+/// from the peripherals.
+#[allow(missing_docs, reason = "the field names are the signal names")]
+pub struct LcdPins<'d> {
+    pub clk: GPIO18<'d>,
+    pub d0: GPIO46<'d>,
+    pub d1: GPIO13<'d>,
+    pub d2: GPIO11<'d>,
+    pub d3: GPIO12<'d>,
+    pub cs: GPIO14<'d>,
+    pub dc: GPIO45<'d>,
+}
+
+/// The [`LcdPins`] taken out of `esp_hal::peripherals::Peripherals`:
+/// `Lcd::new(p.SPI2, p.DMA_CH0, lcd_pins!(p), &mut reset)`.
+#[macro_export]
+macro_rules! lcd_pins {
+    ($p:expr) => {
+        $crate::display::LcdPins {
+            clk: $p.GPIO18,
+            d0: $p.GPIO46,
+            d1: $p.GPIO13,
+            d2: $p.GPIO11,
+            d3: $p.GPIO12,
+            cs: $p.GPIO14,
+            dc: $p.GPIO45,
+        }
+    };
 }
 
 /// The ST77916 panel.
-pub struct Lcd {
-    spi: SpiDma<'static, Async>,
-    cs: Output<'static>,
-    dc: Output<'static>,
+pub struct Lcd<'d> {
+    spi: SpiDma<'d, Async>,
+    cs: Output<'d>,
+    dc: Output<'d>,
     /// Pixel chunks are copied here (internal RAM) before each DMA transfer.
     ///
     /// DMA straight out of the PSRAM frame buffer showed stale data: rows
@@ -120,13 +141,23 @@ pub struct Lcd {
     bounce: &'static mut [u8; CHUNK],
 }
 
-impl Lcd {
+impl<'d> Lcd<'d> {
     /// Resets and initialises the panel and turns it on (showing whatever is
     /// in its memory, so send a frame before switching on the backlight).
+    ///
+    /// Call at most once: the 32 KB bounce buffer is a static.
+    ///
+    /// # Errors
+    ///
+    /// If the SPI configuration is rejected or a transfer fails.
+    ///
+    /// # Panics
+    ///
+    /// On a second call (the bounce buffer is already taken).
     pub async fn new(
-        spi2: SPI2<'static>,
-        dma: DMA_CH0<'static>,
-        pins: LcdPins,
+        spi2: SPI2<'d>,
+        dma: DMA_CH0<'d>,
+        pins: LcdPins<'d>,
         reset: &mut LcdReset<'_>,
     ) -> Result<Self, Error> {
         // The RX buffer is unused (half-duplex writes only) but required.
@@ -179,12 +210,20 @@ impl Lcd {
     }
 
     /// Switches the panel output on or off.
+    ///
+    /// # Errors
+    ///
+    /// If an SPI transfer fails.
     pub async fn set_on(&mut self, on: bool) -> Result<(), Error> {
         self.command(if on { cmd::DISPON } else { cmd::DISPOFF }, &[])
             .await
     }
 
     /// Sends a command with its parameters.
+    ///
+    /// # Errors
+    ///
+    /// If an SPI transfer fails.
     pub async fn command(&mut self, command: u8, params: &[u8]) -> Result<(), Error> {
         let _cs = CsGuard::select(&mut self.cs);
         header(&mut self.spi, &mut self.dc, OPCODE_WRITE_CMD, command).await?;
@@ -201,6 +240,12 @@ impl Lcd {
     ///
     /// Safe to cancel: if the future is dropped mid-transfer, CS is released,
     /// which ends the write on the panel side, and the next call starts clean.
+    ///
+    /// Does nothing for a zero width or fewer pixels than one row.
+    ///
+    /// # Errors
+    ///
+    /// If an SPI transfer fails.
     pub async fn write_window(
         &mut self,
         x0: u16,
@@ -208,6 +253,9 @@ impl Lcd {
         width: u16,
         pixels: &[u8],
     ) -> Result<(), Error> {
+        if width == 0 {
+            return Ok(());
+        }
         let height = (pixels.len() / (usize::from(width) * 2)) as u16;
         if height == 0 {
             return Ok(());
@@ -233,14 +281,24 @@ impl Lcd {
 
     /// Sends the rows of `fb` that changed since the last flush. Returns the
     /// number of rows sent.
+    ///
+    /// # Errors
+    ///
+    /// If an SPI transfer fails. The rows stay marked as changed, so the
+    /// next flush sends them again.
     pub async fn flush(&mut self, fb: &mut FrameBuffer) -> Result<u16, Error> {
         let Some((first, last)) = fb.take_dirty() else {
             return Ok(0);
         };
         let start = usize::from(first) * ROW_BYTES;
         let end = (usize::from(last) + 1) * ROW_BYTES;
-        self.write_window(0, first, WIDTH, &fb.buf[start..end])
-            .await?;
+        if let Err(e) = self
+            .write_window(0, first, WIDTH, &fb.buf[start..end])
+            .await
+        {
+            fb.mark_dirty(first, last);
+            return Err(e);
+        }
         Ok(last - first + 1)
     }
 }
@@ -265,8 +323,8 @@ impl Drop for CsGuard<'_, '_> {
 /// Sends the 32-bit transfer header on one line with DC low, then raises DC
 /// for the parameter or pixel phase.
 async fn header(
-    spi: &mut SpiDma<'static, Async>,
-    dc: &mut Output<'static>,
+    spi: &mut SpiDma<'_, Async>,
+    dc: &mut Output<'_>,
     opcode: u8,
     command: u8,
 ) -> Result<(), Error> {
@@ -292,6 +350,7 @@ pub struct FrameBuffer {
 
 impl FrameBuffer {
     /// Allocates a black frame buffer. The heap must include PSRAM.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buf: vec![0u8; FRAME_BYTES].into_boxed_slice(),
@@ -316,6 +375,7 @@ impl FrameBuffer {
     }
 
     /// Raw frame bytes (RGB565, high byte first).
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.buf
     }
@@ -394,6 +454,9 @@ impl DrawTarget for FrameBuffer {
 }
 
 /// PWM backlight on GPIO44 (LEDC low-speed channel 0, 20 kHz, 10-bit).
+///
+/// Takes `'static` peripherals: the LEDC channel borrows its timer, which
+/// borrows the LEDC driver, so both live in statics.
 pub struct Backlight {
     channel: channel::Channel<'static, LowSpeed>,
 }

@@ -3,12 +3,13 @@ include = ["esp-config.toml"]
 
 [target.xtensa-esp32s3-none-elf]
 runner = "espflash flash --monitor --chip esp32s3"
-
-[build]
+# Only for the chip: on a host target (`cargo test --target ...`) this would
+# link the test binary without its C start-up code, and it would crash.
 rustflags = [
   "-C", "link-arg=-nostartfiles",
 ]
 
+[build]
 target = "xtensa-esp32s3-none-elf"
 
 [unstable]

@@ -1,4 +1,12 @@
 fn main() {
+    // Host builds (unit tests of the hardware-independent modules) need none
+    // of the ESP linker setup below.
+    if !std::env::var("TARGET")
+        .unwrap_or_default()
+        .starts_with("xtensa")
+    {
+        return;
+    }
     linker_be_nice();
     check_xtensa_linker_available();
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
