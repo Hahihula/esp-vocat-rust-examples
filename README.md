@@ -771,6 +771,33 @@ INFO - alarm snoozed for 5 minutes
 INFO - radio: disconnected
 ```
 
+### 10 – Battery gauge on the LCD
+
+```bash
+cargo run --release --bin 10_battery_gauge
+```
+
+The fuel gauge of demo 02 on the screen, so it can be read with USB unplugged. Reads
+the BQ27220 every 2 s and draws:
+
+- **gauge screen:** a 270° ring of 50 segments filled up to the state of charge (red at
+  the start, through amber, to green; all red at 15 % and below), the charge in large
+  digits, the state (`CHARGING`, `ON BATTERY`, `IDLE` or `FULL`; blinks red when low
+  on battery), current and power, voltage and temperature, remaining and full capacity,
+  the time to full or empty, and the state of health. While charging, a cyan segment
+  runs from the charge level to the end of the ring.
+- **details screen:** every gauge value (average current and power, design capacity,
+  cycle count, both time estimates) and the status flags.
+
+The power shown on the gauge screen is voltage × current; the gauge's average power
+register disagrees with its current on this board (see demo 02). If the gauge doesn't
+answer, the screen shows `NO GAUGE`.
+
+Touch pads:
+
+- **front tap:** switch between the gauge and the details screen
+- **back tap:** backlight brightness (100, 50, 20, 5 %)
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
