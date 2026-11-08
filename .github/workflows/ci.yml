@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Host tests of the hardware-independent modules. Stable Rust ignores the
+  # `build-std` setting in .cargo/config.toml; the host target overrides the
+  # default ESP32-S3 target.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test -p esp-vocat -p esp-vocat-examples --lib --target x86_64-unknown-linux-gnu
+
+  # Formatting, lints and a release build of the library and every demo on
+  # the Xtensa toolchain (rust-toolchain.toml: `esp`).
+  esp32s3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32s3
+          ldproxy: false
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --release --lib --bins -- -D warnings
+      - run: cargo clippy -p esp-vocat --release -- -D warnings   # without the `log` feature
+      - run: cargo build --workspace --release --bins

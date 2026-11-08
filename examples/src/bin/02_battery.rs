@@ -23,13 +23,14 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
-use esp_hal::{Async, i2c::master::I2c, timer::timg::TimerGroup};
-use log::{info, warn};
-use vocat_rust_examples::{
+use esp_hal::{Async, i2c::master::I2c};
+use esp_vocat::{
     battery::{Bq27220, DEVICE_NUMBER, Status},
     board::{self, GreenLed},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
 };
+use log::{info, warn};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -128,13 +129,8 @@ static LED_STATE: Signal<CriticalSectionRawMutex, ChargeState> = Signal::new();
 )]
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    let peripherals = board::init();
+    esp_vocat_examples::start!(peripherals, "Demo 02: battery (BQ27220 fuel gauge)");
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 02: battery (BQ27220 fuel gauge) ===");
     info!("front tap = full dump, back tap = state history");
     info!("LED: blinking = charging, steady = idle/full, short flash every 3 s = on battery");
 
@@ -149,12 +145,7 @@ async fn main(spawner: Spawner) -> ! {
         (Err(e), _) => warn!("fuel gauge did not answer: {e:?}"),
     }
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut touch = TouchInput::new(pads).await;
 
     let mut history = History::new();

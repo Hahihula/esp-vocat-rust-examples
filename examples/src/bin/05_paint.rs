@@ -27,17 +27,18 @@ use embedded_graphics::{
     primitives::{Circle, Line, PrimitiveStyle},
 };
 use esp_backtrace as _;
-use esp_hal::{
-    gpio::{Input, InputConfig, Pull},
-    timer::timg::TimerGroup,
+use esp_hal::gpio::{Input, InputConfig, Pull};
+use esp_vocat::{
+    board::{self, LcdReset},
+    display::{Backlight, FrameBuffer, WIDTH},
+    lcd_pins,
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
+    touchscreen::{Cst816, Gesture, IrqLatch},
 };
 use log::{info, warn};
-use vocat_rust_examples::{
-    board::{self, LcdReset},
-    display::{Backlight, FrameBuffer, Lcd, LcdPins, WIDTH},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
-    touchscreen::{Cst816, Gesture},
-};
+
+use esp_vocat_examples::{demo, demo::flush, demo::halt};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -65,14 +66,9 @@ const POLL: Duration = Duration::from_millis(15);
     reason = "main holds the LCD, touch and pad futures for the whole program"
 )]
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
-    let peripherals = board::init();
+async fn main(spawner: Spawner) -> ! {
+    esp_vocat_examples::start!(peripherals, "Demo 05: touchscreen paint (CST816T)");
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 05: touchscreen paint (CST816T) ===");
     info!("paint with a finger, touch a colour dot to pick it");
     info!("front pad tap = clear, back pad tap = brush size");
 
@@ -81,20 +77,9 @@ async fn main(_spawner: Spawner) -> ! {
     Timer::after(Duration::from_millis(20)).await;
     let mut backlight = Backlight::new(peripherals.LEDC, peripherals.GPIO44);
     let mut reset = LcdReset::new(peripherals.GPIO47);
-    let pins = LcdPins {
-        clk: peripherals.GPIO18,
-        d0: peripherals.GPIO46,
-        d1: peripherals.GPIO13,
-        d2: peripherals.GPIO11,
-        d3: peripherals.GPIO12,
-        cs: peripherals.GPIO14,
-        dc: peripherals.GPIO45,
-    };
+    let pins = lcd_pins!(peripherals);
     // This also resets the touch controller, which shares the reset line.
-    let mut lcd = match Lcd::new(peripherals.SPI2, peripherals.DMA_CH0, pins, &mut reset).await {
-        Ok(lcd) => lcd,
-        Err(e) => halt("LCD init failed", e).await,
-    };
+    let mut lcd = demo::lcd(peripherals.SPI2, peripherals.DMA_CH0, pins, &mut reset).await;
 
     let i2c = board::i2c(peripherals.I2C0, peripherals.GPIO1, peripherals.GPIO2)
         .expect("I2C config is valid");
@@ -103,10 +88,11 @@ async fn main(_spawner: Spawner) -> ! {
         Ok((id, fw)) => info!("touch controller: chip ID {id:02X}, firmware {fw:02X}"),
         Err(e) => halt("touch controller did not answer", e).await,
     }
-    let mut ts_int = Input::new(
+    let ts_int = Input::new(
         peripherals.GPIO10,
         InputConfig::default().with_pull(Pull::Up),
     );
+    spawner.spawn(touch_irq_task(ts_int).unwrap());
 
     let mut fb = FrameBuffer::new();
     let mut color = 0usize;
@@ -115,12 +101,7 @@ async fn main(_spawner: Spawner) -> ! {
     flush(&mut lcd, &mut fb).await;
     backlight.fade(0, 100, Duration::from_millis(400));
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut pads = TouchInput::new(pads).await;
 
     let mut last: Option<Point> = None;
@@ -131,14 +112,14 @@ async fn main(_spawner: Spawner) -> ! {
     let mut last_gesture = Gesture::None;
 
     loop {
-        // Wait for an INT pulse from the controller, or poll while a finger
-        // is down. INT stays low for a while after each report, so wait for
-        // the edge, not the level.
+        // Wait for an INT pulse from the controller (latched by
+        // touch_irq_task, so none are lost while drawing), or poll while a
+        // finger is down.
         let wait_touch = async {
             if last.is_some() {
-                let _ = select(ts_int.wait_for_falling_edge(), Timer::after(POLL)).await;
+                let _ = select(TOUCH_IRQ.wait(), Timer::after(POLL)).await;
             } else {
-                ts_int.wait_for_falling_edge().await;
+                TOUCH_IRQ.wait().await;
             }
         };
         match select(wait_touch, pads.next_event()).await {
@@ -224,6 +205,15 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
+/// The touch controller's INT pulses (GPIO10), latched so none are lost
+/// while a stroke is drawn and flushed.
+static TOUCH_IRQ: IrqLatch = IrqLatch::new();
+
+#[embassy_executor::task]
+async fn touch_irq_task(pin: Input<'static>) {
+    TOUCH_IRQ.watch(pin).await
+}
+
 /// Centre of palette dot `i`, on an arc along the bottom edge.
 fn palette_center(i: usize) -> Point {
     // Spread from 135 to 45 degrees (0 = right; y points down, so this is the
@@ -273,18 +263,4 @@ fn draw_palette(fb: &mut FrameBuffer, selected: usize, brush: usize) {
 fn draw_canvas(fb: &mut FrameBuffer, selected: usize, brush: usize) {
     let _ = fb.clear(Rgb565::BLACK);
     draw_palette(fb, selected, brush);
-}
-
-#[allow(clippy::large_stack_frames, reason = "async LCD transfers")]
-async fn flush(lcd: &mut Lcd, fb: &mut FrameBuffer) {
-    if let Err(e) = lcd.flush(fb).await {
-        warn!("flush failed: {e:?}");
-    }
-}
-
-async fn halt(what: &str, e: impl core::fmt::Debug) -> ! {
-    warn!("{what}: {e:?}");
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
-    }
 }

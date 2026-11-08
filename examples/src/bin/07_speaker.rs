@@ -21,24 +21,21 @@ use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Delay, Duration, Timer};
 use esp_backtrace as _;
-use esp_hal::{
-    gpio::{Level, Output, OutputConfig},
-    timer::timg::TimerGroup,
+use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_vocat::{
+    audio::{AudioOut, Note, SAMPLE_RATE, Synth, Wave, pitch::*},
+    board::{self, i2c_addr},
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
 };
 use log::{info, warn};
-use oxstack_drivers::es8311::{Es8311, Mode, Volume};
-use vocat_rust_examples::{
-    audio::{AudioOut, I2sPins, Note, SAMPLE_RATE, Synth, Wave, pitch::*},
-    board::{self, i2c_addr},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
-};
+use oxstack_drivers::es8311::{Es8311, Mode};
+
+use esp_vocat_examples::demo::{START_VOLUME, VOLUME_DB, halt, volume_of};
+
+use esp_vocat::i2s_out_pins;
 
 esp_bootloader_esp_idf::esp_app_desc!();
-
-/// Codec DAC volume steps in dB.
-const VOLUME_DB: [i16; 5] = [-30, -20, -12, -6, 0];
-/// Start at -12 dB: the 3 W speaker is loud.
-const START_VOLUME: usize = 2;
 
 const CHIME: &[Note] = &[Note::new(C5, 120), Note::new(E5, 120), Note::new(G5, 300)];
 
@@ -114,25 +111,15 @@ const ITEMS: [Item; 4] = [Item::Scale, Item::Melody, Item::Sweep, Item::Waveform
 )]
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    let peripherals = board::init();
+    esp_vocat_examples::start!(peripherals, "Demo 07: speaker (I2S, ES8311, NS4150B)");
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 07: speaker (I2S, ES8311, NS4150B) ===");
     info!("front tap = next item, front long touch = stop, back tap = volume");
 
     let _codec_power = board::codec_power_on(peripherals.GPIO48);
     Timer::after(Duration::from_millis(20)).await;
 
     // I2S first: the codec derives its clock from BCLK.
-    let pins = I2sPins {
-        mclk: peripherals.GPIO42,
-        bclk: peripherals.GPIO40,
-        ws: peripherals.GPIO39,
-        dout: peripherals.GPIO41,
-    };
+    let pins = i2s_out_pins!(peripherals);
     let out = match AudioOut::new(peripherals.I2S0, peripherals.DMA_CH1, pins) {
         Ok(out) => out,
         Err(e) => halt("I2S init failed", e).await,
@@ -159,12 +146,7 @@ async fn main(spawner: Spawner) -> ! {
     let _pa = Output::new(peripherals.GPIO15, Level::High, OutputConfig::default());
     COMMANDS.send(Command::Play(CHIME, Wave::Sine)).await;
 
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut touch = TouchInput::new(pads).await;
     let mut next = 0;
 
@@ -191,10 +173,6 @@ async fn main(spawner: Spawner) -> ! {
             _ => {}
         }
     }
-}
-
-fn volume_of(step: usize) -> Volume {
-    Volume::from_half_db(VOLUME_DB[step] * 2)
 }
 
 #[allow(
@@ -230,7 +208,7 @@ async fn play(item: Item) {
     reason = "the synthesiser's sine table and the render buffer, ~1 KiB"
 )]
 #[embassy_executor::task]
-async fn audio_task(mut out: AudioOut) {
+async fn audio_task(mut out: AudioOut<'static>) {
     let mut synth = Synth::new();
     loop {
         while let Ok(cmd) = COMMANDS.try_receive() {
@@ -250,12 +228,5 @@ async fn audio_task(mut out: AudioOut) {
             warn!("audio stream error: {e:?}");
             Timer::after(Duration::from_millis(100)).await;
         }
-    }
-}
-
-async fn halt(what: &str, e: impl core::fmt::Debug) -> ! {
-    warn!("{what}: {e:?}");
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
     }
 }

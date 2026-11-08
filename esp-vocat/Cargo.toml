@@ -1,0 +1,36 @@
+[package]
+name         = "esp-vocat"
+description  = "Board support for the ESP-VoCat v1.2 (ESP32-S3): pins, power, round LCD, touch, microphones, speaker, IMU, fuel gauge"
+edition.workspace      = true
+rust-version.workspace = true
+version.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+readme       = "../README.md"
+keywords     = ["esp32", "esp32s3", "embedded", "no-std", "board-support"]
+categories   = ["embedded", "no-std", "hardware-support"]
+
+[features]
+default = []
+# `board::init_logger()`: log through esp-println on the USB-Serial-JTAG
+# console. Off by default so a firmware picks its own console and logger.
+log = ["dep:esp-println"]
+
+# Always built: the hardware-independent modules (gesture, motion, gain),
+# which are unit-tested on a PC: `cargo +stable test -p esp-vocat --target <host>`.
+[dependencies]
+embassy-time       = { workspace = true }
+libm               = { workspace = true }
+
+# The drivers, only for the ESP32-S3.
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+# `unstable`: the I2S, DMA, LEDC and PSRAM drivers this crate uses are still
+# behind esp-hal's unstable feature in esp-hal 1.x. Pin esp-hal with `~` in
+# a firmware using this crate (as the workspace does).
+esp-hal            = { workspace = true }
+esp-alloc          = { workspace = true }
+esp-println        = { workspace = true, optional = true }
+embassy-sync       = { workspace = true }
+embedded-graphics  = { workspace = true }
+embedded-hal-async = { workspace = true }
+static_cell        = { workspace = true }

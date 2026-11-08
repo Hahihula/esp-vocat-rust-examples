@@ -3,7 +3,8 @@
 //! [`MotionDetector`] is fed samples at a fixed rate and reports tilt against a
 //! reference "upright" direction, moving/still transitions, shakes and knocks.
 //! All thresholds are in g, °/s and degrees; they were picked for a hand-held
-//! toy and are easy to tune.
+//! toy and are easy to tune. Time comes in with each sample, so the state
+//! machine is deterministic and testable.
 
 use embassy_time::{Duration, Instant};
 use libm::{acosf, sqrtf};
@@ -26,6 +27,7 @@ pub const SHAKE_PEAKS: u8 = 3;
 pub const SHAKE_HIGH_G: f32 = 1.8;
 /// |a| must fall below this between two peaks.
 pub const SHAKE_LOW_G: f32 = 1.3;
+/// Peaks must fall within this window to count as one shake.
 pub const SHAKE_WINDOW: Duration = Duration::from_millis(800);
 /// Change of acceleration between two samples that counts as a knock.
 /// Knocks on the housing measured 0.4-1.3 g, handling 0.1-0.3 g.
@@ -80,9 +82,9 @@ pub struct MotionDetector {
 
 impl MotionDetector {
     /// Creates a detector with `up` (an accelerometer reading at rest) as the
-    /// upright reference.
-    pub fn new(up: [f32; 3]) -> Self {
-        let now = Instant::now();
+    /// upright reference, at time `now`.
+    #[must_use]
+    pub fn new(up: [f32; 3], now: Instant) -> Self {
         Self {
             up: normalize(up),
             last_accel: None,
@@ -98,13 +100,17 @@ impl MotionDetector {
         }
     }
 
-    /// Makes `up` the new upright reference.
+    /// Makes `up` the new upright reference. Also forgets the previous
+    /// sample, so a pause in the samples (e.g. while averaging `up`) can't
+    /// look like a knock.
     pub fn set_upright(&mut self, up: [f32; 3]) {
         self.up = normalize(up);
         self.posture = Posture::Upright;
+        self.last_accel = None;
     }
 
     /// Angle between the latest gravity reading and upright, in degrees.
+    #[must_use]
     pub fn tilt_deg(&self) -> f32 {
         self.tilt_deg
     }
@@ -114,10 +120,9 @@ impl MotionDetector {
         core::mem::take(&mut self.peak_jerk)
     }
 
-    /// Feeds one sample (acceleration in g, rotation in °/s). Returns at most
-    /// one event; the rest are reported on later samples.
-    pub fn update(&mut self, accel: [f32; 3], gyro: [f32; 3]) -> Option<MotionEvent> {
-        let now = Instant::now();
+    /// Feeds one sample taken at `now` (acceleration in g, rotation in °/s).
+    /// Returns at most one event; the rest are reported on later samples.
+    pub fn update(&mut self, now: Instant, accel: [f32; 3], gyro: [f32; 3]) -> Option<MotionEvent> {
         let a_mag = norm(accel);
         let g_mag = norm(gyro);
         let jerk = self.last_accel.map_or(0.0, |last| norm(sub(accel, last)));
@@ -171,6 +176,8 @@ impl MotionDetector {
         if (a_mag - 1.0).abs() < 0.15 {
             let cos = dot(normalize(accel), self.up).clamp(-1.0, 1.0);
             self.tilt_deg = acosf(cos).to_degrees();
+            // Order matters: upside down wins from any posture, then the
+            // hysteresis transitions, then no change.
             let posture = match self.posture {
                 _ if self.tilt_deg > UPSIDE_DOWN_DEG => Posture::UpsideDown,
                 Posture::Upright if self.tilt_deg > TILT_ON_DEG => Posture::Tilted,
@@ -195,6 +202,7 @@ impl MotionDetector {
 }
 
 /// Length of a vector.
+#[must_use]
 pub fn norm(v: [f32; 3]) -> f32 {
     sqrtf(dot(v, v))
 }
@@ -213,4 +221,106 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
         return [0.0, 0.0, 1.0];
     }
     v.map(|c| c / n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UP: [f32; 3] = [0.0, 0.0, 1.0];
+    const REST: [f32; 3] = [0.0; 3];
+
+    fn at(ms: u64) -> Instant {
+        Instant::from_millis(1000 + ms)
+    }
+
+    #[test]
+    fn resting_gives_no_events() {
+        let mut m = MotionDetector::new(UP, at(0));
+        for i in 0..200 {
+            assert_eq!(m.update(at(i * 5), UP, REST), None);
+        }
+    }
+
+    #[test]
+    fn tilt_with_hysteresis() {
+        let mut m = MotionDetector::new(UP, at(0));
+        let tilt = |deg: f32| {
+            let r = deg.to_radians();
+            [libm::sinf(r), 0.0, libm::cosf(r)]
+        };
+        assert_eq!(m.update(at(0), tilt(30.0), REST), None);
+        assert!(matches!(
+            m.update(at(5), tilt(40.0), REST),
+            Some(MotionEvent::Tilted(_))
+        ));
+        assert_eq!(m.update(at(10), tilt(25.0), REST), None);
+        assert_eq!(
+            m.update(at(15), tilt(10.0), REST),
+            Some(MotionEvent::Upright)
+        );
+        // Turned over slowly (10 degrees per sample: not a knock).
+        let mut last = None;
+        for (i, deg) in (2..=17).map(|k| k as f32 * 10.0).enumerate() {
+            if let Some(e) = m.update(at(20 + i as u64 * 5), tilt(deg), REST) {
+                last = Some(e);
+            }
+        }
+        assert_eq!(last, Some(MotionEvent::UpsideDown));
+    }
+
+    #[test]
+    fn knock_needs_jerk_without_rotation() {
+        // Knocks are ignored for KNOCK_REFRACTORY after start and after each knock.
+        let mut m = MotionDetector::new(UP, at(0));
+        m.update(at(300), UP, REST);
+        let bump = [0.0, 0.5, 1.0];
+        assert!(matches!(
+            m.update(at(305), bump, REST),
+            Some(MotionEvent::Knock(_))
+        ));
+        assert_eq!(m.update(at(310), UP, REST), None);
+        // Same jerk while rotating fast is handling, not a knock.
+        let mut m = MotionDetector::new(UP, at(0));
+        m.update(at(300), UP, [0.0, 0.0, 100.0]);
+        assert_ne!(
+            m.update(at(305), bump, [0.0, 0.0, 100.0])
+                .map(|e| matches!(e, MotionEvent::Knock(_))),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn set_upright_forgets_the_last_sample() {
+        // A long pause, then a sample far from the last one: not a knock.
+        let mut m = MotionDetector::new(UP, at(0));
+        m.update(at(300), [0.0, 0.6, 0.8], REST);
+        m.set_upright(UP);
+        assert_eq!(m.update(at(460), UP, REST), None);
+    }
+
+    #[test]
+    fn shake_is_three_peaks() {
+        let mut m = MotionDetector::new(UP, at(0));
+        let hi = [0.0, 0.0, 2.5];
+        let lo = [0.0, 0.0, 1.0];
+        let mut events = 0;
+        for (i, a) in [hi, lo, hi, lo, hi].iter().enumerate() {
+            if m.update(at(i as u64 * 50), *a, [0.0, 0.0, 100.0]) == Some(MotionEvent::Shake) {
+                events += 1;
+            }
+        }
+        assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn moving_then_still() {
+        let mut m = MotionDetector::new(UP, at(0));
+        assert_eq!(
+            m.update(at(0), UP, [0.0, 0.0, 30.0]),
+            Some(MotionEvent::Moving)
+        );
+        assert_eq!(m.update(at(500), UP, REST), None);
+        assert_eq!(m.update(at(1000), UP, REST), Some(MotionEvent::Still));
+    }
 }

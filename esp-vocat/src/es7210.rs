@@ -49,37 +49,7 @@ mod reg {
 /// Chip ID registers 0x3D/0x3E.
 pub const CHIP_ID: [u8; 2] = [0x72, 0x10];
 
-/// Microphone preamplifier gain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Gain(u8);
-
-impl Gain {
-    /// The highest gain, 37.5 dB.
-    pub const MAX: Gain = Gain(14);
-
-    /// The nearest gain at or below `db`: 0 to 33 dB in 3 dB steps, then
-    /// 34.5, 36 and 37.5 dB.
-    pub fn from_db(db: f32) -> Self {
-        let code = match db {
-            d if d >= 37.5 => 14,
-            d if d >= 36.0 => 13,
-            d if d >= 34.5 => 12,
-            d if d >= 0.0 => ((d / 3.0) as u8).min(11),
-            _ => 0,
-        };
-        Gain(code)
-    }
-
-    /// The gain in dB.
-    pub fn db(self) -> f32 {
-        match self.0 {
-            0..=11 => f32::from(self.0) * 3.0,
-            12 => 34.5,
-            13 => 36.0,
-            _ => 37.5,
-        }
-    }
-}
+pub use crate::gain::Gain;
 
 /// ES7210 driver over any async I2C bus.
 pub struct Es7210<I> {
@@ -179,7 +149,7 @@ impl<I: I2c> Es7210<I> {
         self.write(reg::MIC12_POWER, 0x00).await?;
         for r in [reg::MIC1_GAIN, reg::MIC2_GAIN] {
             self.update(r, 0x10, 0x10).await?;
-            self.update(r, 0x0F, gain.0).await?;
+            self.update(r, 0x0F, gain.code()).await?;
         }
         // Not TDM.
         self.write(reg::SDP_INTERFACE2, 0x00).await
@@ -187,7 +157,7 @@ impl<I: I2c> Es7210<I> {
 
     /// Changes the MIC1/MIC2 gain.
     pub async fn set_gain(&mut self, gain: Gain) -> Result<(), I::Error> {
-        self.update(reg::MIC1_GAIN, 0x0F, gain.0).await?;
-        self.update(reg::MIC2_GAIN, 0x0F, gain.0).await
+        self.update(reg::MIC1_GAIN, 0x0F, gain.code()).await?;
+        self.update(reg::MIC2_GAIN, 0x0F, gain.code()).await
     }
 }

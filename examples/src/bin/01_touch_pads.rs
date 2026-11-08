@@ -17,12 +17,12 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use log::info;
-use vocat_rust_examples::{
-    board::{self, GreenLed},
-    touch::{Pad, TouchEvent, TouchInput, TouchPads},
+use esp_vocat::{
+    board::GreenLed,
+    touch::{Pad, TouchEvent, TouchInput},
+    touch_pads,
 };
+use log::info;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -35,22 +35,15 @@ const REPORT: Duration = Duration::from_secs(1);
 )]
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
-    let peripherals = board::init();
+    esp_vocat_examples::start!(
+        peripherals,
+        "Demo 01: touch pads (TOUCH6/GPIO6, TOUCH7/GPIO7)"
+    );
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    board::wait_for_console().await;
-
-    info!("=== Demo 01: touch pads (TOUCH6/GPIO6, TOUCH7/GPIO7) ===");
     info!("Calibrating, don't touch the pads...");
 
     let mut led = GreenLed::new(peripherals.GPIO43);
-    let pads = TouchPads::new(
-        peripherals.SENS,
-        peripherals.RTC_IO,
-        peripherals.GPIO6,
-        peripherals.GPIO7,
-    );
+    let pads = touch_pads!(peripherals);
     let mut touch = TouchInput::new(pads).await;
     for pad in Pad::ALL {
         info!("{} baseline {}", pad.name(), touch.reading(pad).baseline);

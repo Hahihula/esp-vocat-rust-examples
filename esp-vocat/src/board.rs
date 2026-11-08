@@ -49,18 +49,35 @@ pub mod i2c_addr {
     pub const BMI270: u8 = 0x68;
 }
 
-/// Initialises logging, the HAL with maximum CPU clock and a small internal heap.
+/// Initialises the HAL with the maximum CPU clock (240 MHz).
+///
+/// Logging and the heap are the application's choice:
+///
+/// ```ignore
+/// let p = esp_vocat::board::init();
+/// esp_vocat::board::init_logger(); // with the `log` feature
+/// // Internal heap in the RAM the bootloader used, then PSRAM if wanted:
+/// esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: esp_vocat::board::RECLAIMED_HEAP);
+/// esp_vocat::board::psram_heap(p.PSRAM);
+/// ```
 ///
 /// The caller still has to start `esp_rtos` with a `TIMG0` timer.
+#[must_use]
 pub fn init() -> Peripherals {
+    esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()))
+}
+
+/// Size of the internal RAM the second-stage bootloader used and the
+/// application can reclaim as heap (`#[esp_hal::ram(reclaimed)]`), in bytes.
+pub const RECLAIMED_HEAP: usize = 73_744;
+
+/// Logs through `esp-println` to the USB-Serial-JTAG console (the USB-C
+/// port), at the level in the `ESP_LOG` environment variable at build time.
+/// UART0 is not an option on this board: its TX pin (GPIO43) drives the
+/// green LED.
+#[cfg(feature = "log")]
+pub fn init_logger() {
     esp_println::logger::init_logger_from_env();
-
-    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
-
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
-
-    peripherals
 }
 
 /// Initialises the 16 MB octal PSRAM at 80 MHz (the esp-hal default is 40 MHz).
@@ -73,9 +90,9 @@ pub fn psram(psram: PSRAM<'static>) -> Psram {
     Psram::new(psram, config)
 }
 
-/// Initialises PSRAM with [`psram`] and adds all of it to the heap.
-/// Allocations that don't fit into internal RAM then come from PSRAM.
-/// Call at most once. Returns the PSRAM size in bytes.
+/// Initialises PSRAM with [`psram`] and adds all of it to the heap, after any
+/// internal-RAM regions: allocations that don't fit into internal RAM then
+/// come from PSRAM. Call at most once. Returns the PSRAM size in bytes.
 pub fn psram_heap(psram: PSRAM<'static>) -> usize {
     let psram = self::psram(psram);
     let (_, size) = psram.raw_parts();
