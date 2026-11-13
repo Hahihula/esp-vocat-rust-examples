@@ -28,6 +28,7 @@ libm               = { workspace = true }
 # behind esp-hal's unstable feature in esp-hal 1.x. Pin esp-hal with `~` in
 # a firmware using this crate (as the workspace does).
 esp-hal            = { workspace = true }
+bq27220-async      = { workspace = true }
 esp-alloc          = { workspace = true }
 esp-println        = { workspace = true, optional = true }
 embassy-sync       = { workspace = true }

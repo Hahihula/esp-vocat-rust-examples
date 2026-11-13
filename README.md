@@ -1,12 +1,14 @@
 # ESP-VoCat Rust examples
 
 <p align="center">
-  <img src="assets/radio_example.jpg" alt="ESP-VoCat showing the clock face of the radio alarm clock demo" width="480">
+  <img src="assets/radio_example.jpg" alt="ESP-VoCat showing the clock face of the radio alarm clock demo" width="400">
+  <img src="assets/10_battery_gauge_1400.jpg" alt="ESP-VoCat showing the battery gauge demo: 87 % charge on a segmented ring" width="400">
 </p>
 
-*Demo 09, the [internet radio alarm clock](#09--internet-radio-alarm-clock): the time
-comes from the internet over Wi-Fi, and an internet radio stream wakes you with slowly
-rising volume.*
+*Left, demo 09, the [internet radio alarm clock](#09--internet-radio-alarm-clock): the
+time comes from the internet over Wi-Fi, and an internet radio stream wakes you with
+slowly rising volume. Right, demo 10, the
+[battery gauge](#10--battery-gauge-on-the-lcd) on the round LCD.*
 
 Bare-metal (`no_std`) Rust demos for the
 [ESP-VoCat v1.2](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp-vocat/user_guide_v1.2.html)
@@ -65,7 +67,7 @@ ESP32-S3.
 |------|----------|
 | `esp-vocat/src/board.rs` | Board pin map, I2C device addresses, `init()`, logger, PSRAM heap, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
 | `esp-vocat/src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers; both restart themselves after a DMA error), and a small synthesiser |
-| `esp-vocat/src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
+| `esp-vocat/src/lib.rs` (`battery`) | Re-export of the [`bq27220-async`](https://github.com/Hahihula/bq27220-async) crate, the BQ27220 fuel gauge driver |
 | `esp-vocat/src/es7210.rs` | ES7210 microphone ADC driver, ported from Espressif's `esp_codec_dev` |
 | `esp-vocat/src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
 | `esp-vocat/src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |
@@ -75,7 +77,7 @@ ESP32-S3.
 | `esp-vocat/src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples (host-tested) |
 | `esp-vocat/src/gain.rs` | ES7210 gain steps (host-tested) |
 | `examples/src/demo.rs` | Start-up macro, LCD bring-up, flush and halt helpers, speaker volume steps |
-| `examples/src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP client |
+| `examples/src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP query (the `sntpc` crate with its embassy adapters) |
 | `examples/src/time.rs` | Dates from Unix time, EU summer time, local time, a clock kept from one time sync (host-tested) |
 | `examples/src/url.rs` | `http://` URL parsing (host-tested) |
 | `examples/src/clock.rs` | Build-time time zone on top of `time` |
@@ -776,6 +778,10 @@ INFO - radio: disconnected
 ```bash
 cargo run --release --bin 10_battery_gauge
 ```
+
+<p align="center">
+  <img src="assets/10_battery_gauge_1400.jpg" alt="The gauge screen on the ESP-VoCat: 87 % on a ring of red, amber and green segments, ON BATTERY, -95 mA, 4.01 V, 537 / 623 mAh, empty in 5:54 h, health 96 %" width="480">
+</p>
 
 The fuel gauge of demo 02 on the screen, so it can be read with USB unplugged. Reads
 the BQ27220 every 2 s and draws:

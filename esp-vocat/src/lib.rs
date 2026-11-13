@@ -25,7 +25,7 @@ pub mod motion;
 #[cfg(target_arch = "xtensa")]
 pub mod audio;
 #[cfg(target_arch = "xtensa")]
-pub mod battery;
+pub use bq27220_async as battery;
 #[cfg(target_arch = "xtensa")]
 pub mod board;
 #[cfg(target_arch = "xtensa")]
