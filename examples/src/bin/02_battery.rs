@@ -21,7 +21,7 @@
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use embassy_time::{Duration, Instant, Ticker, Timer};
+use embassy_time::{Delay, Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::{Async, i2c::master::I2c};
 use esp_vocat::{
@@ -138,8 +138,11 @@ async fn main(spawner: Spawner) -> ! {
 
     let i2c = board::i2c(peripherals.I2C0, peripherals.GPIO1, peripherals.GPIO2)
         .expect("I2C config is valid");
-    let mut gauge = Bq27220::new(i2c);
-    match (gauge.device_number().await, gauge.firmware_version().await) {
+    let mut gauge = Bq27220::new(i2c, esp_vocat::board::i2c_addr::BQ27220);
+    match (
+        gauge.device_number(&mut Delay).await,
+        gauge.firmware_version(&mut Delay).await,
+    ) {
         (Ok(DEVICE_NUMBER), Ok(fw)) => info!("BQ27220 found, firmware {fw:04X}"),
         (Ok(other), _) => warn!("unexpected device number {other:04X}"),
         (Err(e), _) => warn!("fuel gauge did not answer: {e:?}"),

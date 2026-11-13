@@ -67,7 +67,7 @@ ESP32-S3.
 |------|----------|
 | `esp-vocat/src/board.rs` | Board pin map, I2C device addresses, `init()`, logger, PSRAM heap, shared I2C bus, LCD/SD and codec power switches, LCD reset, green LED |
 | `esp-vocat/src/audio.rs` | I2S output stream to the ES8311 and input stream from the ES7210 (DMA ring buffers; both restart themselves after a DMA error), and a small synthesiser |
-| `esp-vocat/src/battery.rs` | BQ27220 fuel gauge driver (generic over `embedded-hal-async` I2C) |
+| `esp-vocat/src/lib.rs` (`battery`) | Re-export of the [`bq27220-async`](https://github.com/Hahihula/bq27220-async) crate, the BQ27220 fuel gauge driver |
 | `esp-vocat/src/es7210.rs` | ES7210 microphone ADC driver, ported from Espressif's `esp_codec_dev` |
 | `esp-vocat/src/display.rs` | ST77916 QSPI LCD driver, PSRAM frame buffer (`embedded-graphics` `DrawTarget`) and PWM backlight |
 | `esp-vocat/src/st77916_init.rs` | ST77916 vendor init sequence from Espressif's BSP |

@@ -44,7 +44,7 @@ pub mod i2c_addr {
     /// Needs codec power ([`codec_power_on`](super::codec_power_on)).
     pub const ES7210: u8 = 0x40;
     /// BQ27220 battery fuel gauge on the base board.
-    pub const BQ27220: u8 = 0x55;
+    pub const BQ27220: u8 = bq27220_async::DEFAULT_ADDRESS;
     /// BMI270 6-axis IMU (SDO tied low).
     pub const BMI270: u8 = 0x68;
 }

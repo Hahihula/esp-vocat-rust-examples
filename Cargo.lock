@@ -101,6 +101,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bq27220-async"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80878dd1eb273e5a7e7255aaeb1e30e00d38916a20d4171d7d7591bb12783db3"
+dependencies = [
+ "embedded-hal-async",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1023,6 +1032,7 @@ dependencies = [
 name = "esp-vocat"
 version = "0.1.0"
 dependencies = [
+ "bq27220-async",
  "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-graphics",
