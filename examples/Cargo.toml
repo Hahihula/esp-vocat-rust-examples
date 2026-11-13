@@ -26,6 +26,9 @@ esp-println            = { workspace = true }
 embassy-net            = { workspace = true }
 smoltcp                = { workspace = true }
 embedded-io-async      = { workspace = true }
+sntpc                  = { workspace = true }
+sntpc-net-embassy      = { workspace = true }
+sntpc-time-embassy     = { workspace = true }
 nanomp3-core           = { workspace = true }
 log                    = { workspace = true }
 embassy-executor       = { workspace = true }

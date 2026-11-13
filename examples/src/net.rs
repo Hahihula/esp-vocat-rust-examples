@@ -5,12 +5,14 @@
 //! `WIFI_SSID=... WIFI_PASSWORD=... cargo run --release --bin 09_radio_alarm`.
 //! An empty or missing password selects an open network.
 //!
-//! Ported from the ESP32-S31-Korvo-1 examples; [`DateTime`] and the SNTP
-//! client are shared with [`crate::clock`].
+//! Ported from the ESP32-S31-Korvo-1 examples; [`DateTime`] is shared
+//! with [`crate::clock`]; the time comes from an SNTP query (the `sntpc` crate).
+
+use core::net::{IpAddr, SocketAddr};
 
 use embassy_executor::Spawner;
 use embassy_net::{
-    Config as NetConfig, Runner, Stack, StackResources,
+    Config as NetConfig, IpAddress, Runner, Stack, StackResources,
     dns::DnsQueryType,
     udp::{PacketMetadata, UdpSocket},
 };
@@ -21,6 +23,9 @@ use esp_radio::wifi::{
     WifiError, sta::StationConfig,
 };
 use log::{info, warn};
+use sntpc::NtpContext;
+use sntpc_net_embassy::UdpSocketWrapper;
+use sntpc_time_embassy::EmbassyTimestampGenerator;
 use static_cell::StaticCell;
 
 /// Socket slots: DHCP, DNS, plus a few for the application.
@@ -144,24 +149,30 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
     }
 }
 
+/// Why [`ntp_time`] failed.
 #[derive(Debug)]
+#[allow(missing_docs, reason = "the variant names say it")]
 pub enum NtpError {
+    /// The server name didn't resolve to an IPv4 address.
     Dns,
+    /// The UDP socket couldn't be bound.
     Socket,
+    /// No reply within 5 s.
     Timeout,
-    BadReply,
+    /// The request failed or the reply was rejected.
+    Ntp(sntpc::Error),
 }
 
-/// Offset between the NTP epoch (1900) and the Unix epoch (1970) in seconds.
-const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
-
-/// Asks `server` for the time (SNTP v4) and returns Unix seconds.
+/// Asks `server` for the time (SNTP, with the `sntpc` crate) and returns
+/// Unix seconds.
 pub async fn ntp_time(stack: Stack<'_>, server: &str) -> Result<u64, NtpError> {
     let addrs = stack
         .dns_query(server, DnsQueryType::A)
         .await
         .map_err(|_| NtpError::Dns)?;
-    let addr = *addrs.first().ok_or(NtpError::Dns)?;
+    let Some(IpAddress::Ipv4(addr)) = addrs.first().copied() else {
+        return Err(NtpError::Dns);
+    };
 
     let mut rx_meta = [PacketMetadata::EMPTY; 2];
     let mut rx_buf = [0u8; 128];
@@ -169,29 +180,15 @@ pub async fn ntp_time(stack: Stack<'_>, server: &str) -> Result<u64, NtpError> {
     let mut tx_buf = [0u8; 128];
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
     socket.bind(0).map_err(|_| NtpError::Socket)?;
+    let socket = UdpSocketWrapper::from(socket);
 
-    // LI = 0, version 4, mode 3 (client).
-    let mut request = [0u8; 48];
-    request[0] = 0x23;
-    socket
-        .send_to(&request, (addr, 123))
-        .await
-        .map_err(|_| NtpError::Socket)?;
-
-    let mut reply = [0u8; 48];
-    let (len, _) = with_timeout(Duration::from_secs(5), socket.recv_from(&mut reply))
-        .await
-        .map_err(|_| NtpError::Timeout)?
-        .map_err(|_| NtpError::Socket)?;
-    // Mode 4 (server) and a non-zero transmit timestamp.
-    if len < 48 || reply[0] & 0x07 != 4 {
-        return Err(NtpError::BadReply);
+    let context = NtpContext::new(EmbassyTimestampGenerator::default());
+    let request = sntpc::get_time(SocketAddr::new(IpAddr::V4(addr), 123), &socket, context);
+    match with_timeout(Duration::from_secs(5), request).await {
+        Ok(Ok(time)) => Ok(time.sec()),
+        Ok(Err(e)) => Err(NtpError::Ntp(e)),
+        Err(_) => Err(NtpError::Timeout),
     }
-    let seconds = u32::from_be_bytes([reply[40], reply[41], reply[42], reply[43]]);
-    u64::from(seconds)
-        .checked_sub(NTP_UNIX_OFFSET)
-        .filter(|&s| s > 0)
-        .ok_or(NtpError::BadReply)
 }
 
 pub use crate::time::DateTime;

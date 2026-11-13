@@ -75,7 +75,7 @@ ESP32-S3.
 | `esp-vocat/src/motion.rs` | Software tilt, moving/still, shake and knock detection from IMU samples (host-tested) |
 | `esp-vocat/src/gain.rs` | ES7210 gain steps (host-tested) |
 | `examples/src/demo.rs` | Start-up macro, LCD bring-up, flush and halt helpers, speaker volume steps |
-| `examples/src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP client |
+| `examples/src/net.rs` | Wi-Fi station with reconnect, embassy-net stack with DHCP, SNTP query (the `sntpc` crate with its embassy adapters) |
 | `examples/src/time.rs` | Dates from Unix time, EU summer time, local time, a clock kept from one time sync (host-tested) |
 | `examples/src/url.rs` | `http://` URL parsing (host-tested) |
 | `examples/src/clock.rs` | Build-time time zone on top of `time` |
