@@ -1,12 +1,14 @@
 # ESP-VoCat Rust examples
 
 <p align="center">
-  <img src="assets/radio_example.jpg" alt="ESP-VoCat showing the clock face of the radio alarm clock demo" width="480">
+  <img src="assets/radio_example.jpg" alt="ESP-VoCat showing the clock face of the radio alarm clock demo" width="400">
+  <img src="assets/10_battery_gauge_1400.jpg" alt="ESP-VoCat showing the battery gauge demo: 87 % charge on a segmented ring" width="400">
 </p>
 
-*Demo 09, the [internet radio alarm clock](#09--internet-radio-alarm-clock): the time
-comes from the internet over Wi-Fi, and an internet radio stream wakes you with slowly
-rising volume.*
+*Left, demo 09, the [internet radio alarm clock](#09--internet-radio-alarm-clock): the
+time comes from the internet over Wi-Fi, and an internet radio stream wakes you with
+slowly rising volume. Right, demo 10, the
+[battery gauge](#10--battery-gauge-on-the-lcd) on the round LCD.*
 
 Bare-metal (`no_std`) Rust demos for the
 [ESP-VoCat v1.2](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp-vocat/user_guide_v1.2.html)
@@ -776,6 +778,10 @@ INFO - radio: disconnected
 ```bash
 cargo run --release --bin 10_battery_gauge
 ```
+
+<p align="center">
+  <img src="assets/10_battery_gauge_1400.jpg" alt="The gauge screen on the ESP-VoCat: 87 % on a ring of red, amber and green segments, ON BATTERY, -95 mA, 4.01 V, 537 / 623 mAh, empty in 5:54 h, health 96 %" width="480">
+</p>
 
 The fuel gauge of demo 02 on the screen, so it can be read with USB unplugged. Reads
 the BQ27220 every 2 s and draws:
